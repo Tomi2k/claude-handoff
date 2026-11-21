@@ -181,7 +181,7 @@ unless the user asked for it in this conversation.
    script quoted with `printf %q` (never splice the prompt into nested ssh quotes):
    ```bash
    S=$(mktemp)
-   { printf 'cd ~/projects/%q || exit 1\n' "<repo>"; printf 'exec claude %q\n' "<START_PROMPT>"; } > "$S"
+   { echo 'rm -f -- "$0"'; printf 'cd ~/projects/%q || exit 1\n' "<repo>"; printf 'exec claude %q\n' "<START_PROMPT>"; } > "$S"
    scp "<HANDOVER_PATH>" "$HANDOFF_REMOTE_HOST":handoffs/
    scp "$S" "$HANDOFF_REMOTE_HOST":handoffs/start-<slug>.sh && rm -f "$S"
    ssh "$HANDOFF_REMOTE_HOST" 'tmux new-session -d -s handoff-<slug> bash ~/handoffs/start-<slug>.sh'
