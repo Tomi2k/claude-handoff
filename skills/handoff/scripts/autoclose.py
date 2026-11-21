@@ -64,6 +64,7 @@ def tty_of(pid):
 
 def log(sid, msg):
     os.makedirs(LOG_DIR, mode=0o700, exist_ok=True)
+    os.chmod(LOG_DIR, 0o700)
     with open(os.path.join(LOG_DIR, f".autoclose-{sid}.log"), "a", encoding="utf-8") as f:
         f.write(time.strftime("%Y-%m-%d %H:%M:%S ") + msg + "\n")
 
@@ -161,7 +162,10 @@ def main():
     result = {}
 
     async def close(conn):
-        s = await find_session(conn, tty) if alive(e["pid"]) else None
+        ok = alive(e["pid"]) and tty_of(e["pid"]) == tty
+        s = await find_session(conn, tty) if ok else None
+        if s and not (alive(e["pid"]) and tty_of(e["pid"]) == tty):
+            s = None
         if s:
             await s.async_close(force=True)
         result["closed"] = bool(s)

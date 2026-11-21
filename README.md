@@ -52,7 +52,7 @@ Handing off by hand was not much better. These are the failures this skill fixes
 
 | Problem I hit | What the skill does |
 |---|---|
-| The session gets sloppy and I notice too late. | A hook measures the fill level on every prompt and suggests the handoff at a threshold you choose. |
+| The session gets sloppy and I notice too late. | A hook measures the fill level on every prompt. At a threshold you choose, Claude asks you whether to hand off. |
 | The handoff cut a step in half. The new session started with a half-done edit. | It finishes the running step first if the rest fits into 10 % of the window. Otherwise it stops at the next clean point. |
 | The new session "continued" although the work was done, and invented its own next tasks. | A fixed rule decides between **CONTINUE** and **CONFIRM**. Assigned work and own suggestions are separate lists. Suggestions never run without your OK. |
 | I copied context by hand and forgot the important part. | A goal-filtered handover file: state, decisions, files, next steps, traps - and nothing else. |
@@ -136,8 +136,9 @@ The first launch asks macOS to let your terminal control iTerm2 (Automation). Al
 ```
 
 No goal? The skill asks one question: *What should the new session achieve?* It never
-invents the goal. With the hook installed, Claude suggests the handoff by itself when the
-threshold is reached - and still finishes the running step first.
+invents the goal. With the hook installed, Claude asks you at the threshold whether to
+hand off - and after your yes it still finishes the running step first. Set
+`HANDOFF_AUTO=1` if you want it to hand off without asking.
 
 ## Configure
 
@@ -148,7 +149,8 @@ threshold is reached - and still finishes the running step first.
 | `CLAUDE_CONTEXT_WINDOW` | `200000` (`1000000` if the model has `[1m]`) | Window size used for the percentages. |
 | `HANDOFF_DIR` | `~/.claude/handoffs` | Where handover files and small state files go. |
 | `HANDOFF_MODEL` | - | Model alias for the new session, e.g. `opus`. |
-| `HANDOFF_SKIP_PERMISSIONS` | `0` | `1` starts the new session with `--dangerously-skip-permissions`. Read *Security* first. |
+| `HANDOFF_SKIP_PERMISSIONS` | `0` | `1` starts the new session with `--dangerously-skip-permissions`. Set it only in your own shell profile; the skill never sets it. Read *Security* first. |
+| `HANDOFF_AUTO` | `0` | `1` lets the context watcher start the handoff without asking you first. |
 | `HANDOFF_ITERM2_PYTHON` | `python3` | Python with the `iterm2` module, for auto-close. |
 | `HANDOFF_REMOTE_HOST` | - | SSH alias for remote mode. On the server: `~/handoffs` and `~/projects/<repo>`. |
 
@@ -187,10 +189,15 @@ I audited both the skill and the scripts before publishing. What you should know
   default; CONTINUE only covers work you assigned, quoted with date.
 - **Remote mode never trusts a repository for you.** If Claude Code asks whether to trust
   a freshly cloned repository on the server, the skill stops and lets you decide: trusting
-  it lets the repository's hooks and MCP settings run code.
-- **Handover files stay private.** The folder is created with mode 700.
-- **Background check output is redacted.** Values after `token=`, `key=`, `password=`,
-  `Bearer` and `-p` are masked before they reach the model.
+  it lets the repository's hooks and MCP settings run code. It validates host, repository,
+  URL and file names before building a command, asks before copying git-ignored files,
+  and never copies `.env` files, keys or credentials.
+- **Handover files stay private.** Folder mode 700, files mode 600, also on the server.
+- **Background check output is redacted.** URL credentials, `Bearer`/`Basic` values,
+  `-u user:pass`, `--token`/`--password` values, `-p` values and `KEY=`/`TOKEN=` values are
+  masked before they reach the model.
+- **The context watcher asks first.** It never starts a handoff on its own unless you set
+  `HANDOFF_AUTO=1`.
 - **No network calls** except your own SSH in remote mode. No telemetry.
 
 ## Limits

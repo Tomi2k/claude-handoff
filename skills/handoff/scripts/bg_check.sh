@@ -64,8 +64,13 @@ for c in $(pgrep -P "$CPID"); do
   et=$(ps -o etime= -p "$c" | tr -d ' ')
   N=$((N + 1))
   shown=$(printf '%s' "$inner" | tr '\n' ' ' | sed -E \
-    -e 's/((token|key|secret|passw(or)?d|auth)[A-Za-z_]*[=:][[:space:]]*)[^[:space:]]+/\1***/Ig' \
-    -e 's/(Bearer[[:space:]]+)[^[:space:]]+/\1***/g' -e 's/(-p|--password)[[:space:]]+[^[:space:]]+/\1 ***/g' | cut -c1-160)
+    -e 's#(://)[^/[:space:]@]+@#\1***@#g' \
+    -e 's/((Bearer|Basic|Token)[[:space:]]+)[^[:space:]"'"'"']+/\1***/Ig' \
+    -e 's/(--?(token|password|passwd|pass|secret|key|api-key|apikey|auth)[=[:space:]]+)[^[:space:]]+/\1***/Ig' \
+    -e 's/(-u[[:space:]]+)[^[:space:]:]+:[^[:space:]]+/\1***/g' \
+    -e 's/(-p)[^[:space:]]{3,}/\1***/g' -e 's/(-p[[:space:]]+)[^[:space:]-][^[:space:]]*/\1***/g' \
+    -e 's/(([A-Za-z_]*(token|key|secret|passw(or)?d|auth)[A-Za-z_]*)[=:][[:space:]]*)[^*[:space:]][^[:space:]]*/\1***/Ig' \
+    | cut -c1-160)
   printf 'RUNNING  pid %-6s for %-9s %s\n' "$c" "$et" "$shown"
 done
 

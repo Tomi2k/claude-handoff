@@ -12,6 +12,7 @@
 # Paths, prompt and session name therefore cannot inject shell or AppleScript commands.
 set -uo pipefail
 CWD="${1:-}"; HO="${2:-}"; NAME="${3:-}"
+case "$NAME" in *[[:cntrl:]]*) echo "ERROR: session name contains control characters" >&2; exit 2 ;; esac
 [ -d "$CWD" ] || { echo "ERROR: project dir not found: $CWD" >&2; exit 2; }
 [ -f "$HO" ]  || { echo "ERROR: handover file not found: $HO" >&2; exit 2; }
 LAUNCH_MS=$(( $(date +%s) * 1000 ))
@@ -71,7 +72,7 @@ for _ in $(seq 1 90); do
     pid=$(jq -r --argjson t "$LAUNCH_MS" 'select(.startedAt > $t) | .pid' "$f" 2>/dev/null)
     [ -n "$pid" ] || continue
     if [ "/dev/$(ps -o tty= -p "$pid" 2>/dev/null | tr -d ' ')" = "$TAB_TTY" ]; then
-      READY=$(jq -r .sessionId "$f"); break 2
+      READY=$(jq -r .sessionId "$f"); CPID="$pid"; break 2
     fi
   done
   sleep 1
@@ -82,6 +83,10 @@ if [ -z "$READY" ]; then
   exit 1
 fi
 sleep 4  # let the TUI finish drawing
+# Never type into a plain shell: claude must still run in the foreground of the tab.
+if ! kill -0 "$CPID" 2>/dev/null || ! ps -t "${TAB_TTY#/dev/}" -o stat=,pid= | awk -v p="$CPID" '$2==p && $1 ~ /\+/ {f=1} END {exit !f}'; then
+  echo "WARNING: claude is not in the foreground of the new tab - skipped /rename" >&2; exit 1
+fi
 
 # Type /rename into exactly that tab (the user may have switched tabs meanwhile).
 # Text first without newline, short pause for the slash menu, then a real CR:

@@ -16,6 +16,7 @@ Configuration (environment):
   HANDOFF_WATCH_TOKENS    absolute token count that triggers the note, whichever comes
                           first (optional; e.g. 150000 for large windows)
   HANDOFF_DIR             state folder (default ~/.claude/handoffs)
+  HANDOFF_AUTO            1 = start the handoff without asking (default: ask the user first)
 
 CLI for the skill:  context_watcher.py --status <SESSION_ID>
 """
@@ -35,11 +36,11 @@ STATE_DIR = os.path.expanduser(os.environ.get("HANDOFF_DIR", "~/.claude/handoffs
 
 def window_size():
     env = os.environ.get("CLAUDE_CONTEXT_WINDOW")
-    if env and env.isdigit():
+    if env and env.isdigit() and int(env) > 0:
         return int(env)
     try:
         with open(os.path.join(CONFIG_DIR, "settings.json"), encoding="utf-8") as f:
-            model = json.load(f).get("model", "")
+            model = (json.load(f) or {}).get("model") or ""
     except (OSError, ValueError):
         model = ""
     return 1_000_000 if "[1m]" in model else 200_000
@@ -131,6 +132,7 @@ def main():
     if last_warned >= THRESHOLD and frac < last_warned + STEP:
         return
     os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
+    os.chmod(STATE_DIR, 0o700)
     with open(state_file, "w", encoding="utf-8") as f:
         f.write(f"{frac:.3f}")
 
@@ -145,10 +147,16 @@ def main():
                      f"it first when the rest fits into about {budget} tokens (10 % of the window). "
                      f"If it does not fit, work up to the next clean stopping point. "
                      f"Do not start a new step.")
+    if os.environ.get("HANDOFF_AUTO") == "1":
+        start = (f"Prepare the /handoff skill (Skill tool, skill: \"handoff\"), but do not abort anything. "
+                 f"{step_rule} Then follow step 0 of the skill.")
+    else:
+        start = (f"Tell the user in one sentence and ASK whether to hand off now. Do not start the "
+                 f"handoff without their approval. If they approve: {step_rule} Then follow step 0 "
+                 f"of the /handoff skill.")
     msg = (f"[CONTEXT-WATCHER] The context window is ~{pct} % full ({used} of {WINDOW} tokens). "
-           f"Prepare the /handoff skill (Skill tool, skill: \"handoff\"), but do not abort anything. "
-           f"{step_rule} Then follow step 0 of the skill. Do not invent the goal of the new "
-           f"session: if it is not clear from the user's assignment, ask.")
+           f"{start} Do not invent the goal of the new session: if it is not clear from the "
+           f"user's assignment, ask.")
     print(json.dumps({
         "systemMessage": f"Context {pct} % - handoff suggested",
         "hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": msg},

@@ -18,7 +18,7 @@ set -euo pipefail
 case "${1:-}" in
   current)
     own="${2:-}"
-    [ -n "$own" ] || { echo "usage: handoff_title.sh current <own_session_id>" >&2; exit 2; }
+    [[ "$own" =~ ^[0-9A-Za-z-]{8,64}$ ]] || { echo "usage: handoff_title.sh current <own_session_id>" >&2; exit 2; }
     for tr in "$HOME"/.claude/projects/*/"$own".jsonl; do
       [ -r "$tr" ] || continue
       last=$(grep -a '"type":"custom-title"' "$tr" | tail -1 \

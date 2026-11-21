@@ -17,8 +17,9 @@ Two modes:
 Arguments: if the argument starts with `remote`, the rest is the goal. Otherwise all of
 it is the goal. No goal given: ask ONE question, "What should the new session achieve?".
 Never invent the goal - the user sets it, and only context that serves it is carried over.
-If a `[CONTEXT-WATCHER]` note triggered the handoff, the goal is the user's open
-assignment in their own words, when it is unambiguous. Otherwise ask.
+A `[CONTEXT-WATCHER]` note never starts a handoff by itself: ask the user first, unless
+they set `HANDOFF_AUTO=1` in their environment. After the user agrees, the goal is their
+open assignment in their own words, when it is unambiguous. Otherwise ask.
 
 `<SESSION_ID>` below is your own session id. Claude Code shows it in the scratchpad path
 of your system prompt (`.../<SESSION_ID>/scratchpad`). Never guess it.
@@ -67,8 +68,9 @@ agents and workflows you started that have not reported back yet. For step 1:
 
 ## Step 1 - Write the handover file
 
-Path: `${HANDOFF_DIR:-~/.claude/handoffs}/<YYYYMMDD-HHMM>-<short-slug>.md`. Create the
-folder with `mkdir -p -m 700` if needed; the file can hold sensitive session context. Date via `date +%Y%m%d-%H%M`.
+Path: `${HANDOFF_DIR:-~/.claude/handoffs}/<YYYYMMDD-HHMM>-<short-slug>.md`. The file can
+hold sensitive session context: run `mkdir -p -m 700 <dir> && chmod 700 <dir>` before
+writing and `chmod 600 <file>` after writing. Date via `date +%Y%m%d-%H%M`.
 
 Structure (keep every section, but filter RADICALLY by the goal - what does not serve
 the goal goes, however interesting it was):
@@ -117,8 +119,9 @@ already done, and then invented its own follow-up tasks. So a fixed test decides
 1. The user assigned work that is demonstrably not done yet.
 2. You can quote the assignment: the user's words with date or time.
 3. No open decision of the user blocks this work.
-4. The context watcher or the context limit triggered the handoff - or the user
-   explicitly says "keep going" / "continue right away" when asking for the handoff.
+4. The user explicitly says "keep going" / "continue right away" for this handoff - or
+   the context watcher triggered it, the user approved the handoff (or set
+   `HANDOFF_AUTO=1`), and the work is case C from 0.1.
 
 Otherwise `CONFIRM`. When in doubt, `CONFIRM`. Your own suggestion is never an
 assignment. If the assignment is done, it is always `CONFIRM` with "Assignment status:
@@ -146,16 +149,18 @@ Never take it from memory or from an earlier handover file.
 
 ```bash
 INFO=$(~/.claude/skills/handoff/scripts/handoff_title.sh current "<SESSION_ID>")  # "name|id" or empty
-NEW_NAME=$(~/.claude/skills/handoff/scripts/handoff_title.sh next "${INFO%%|*}")   # empty if unnamed
-~/.claude/skills/handoff/scripts/handoff_launch.sh "<PROJECT_DIR>" "<HANDOVER_PATH>" "$NEW_NAME"
+NEW_NAME=$(~/.claude/skills/handoff/scripts/handoff_title.sh next "${INFO%|*}")    # empty if unnamed
+~/.claude/skills/handoff/scripts/handoff_launch.sh '<PROJECT_DIR>' '<HANDOVER_PATH>' "$NEW_NAME"
 ```
+
+Put paths in single quotes. If a path contains a single quote, write it as `'\''`.
 
 The launcher opens a new TAB in the current iTerm2 window (a new window only if none is
 open), waits up to ~95 s until the rename is typed, and prints the new name - tell the
 user. On "new session not found" the tab still started; only the rename is missing, so
 ask the user to run `/rename` once. Optional: `HANDOFF_MODEL=<alias>` picks the model.
-`HANDOFF_SKIP_PERMISSIONS=1` starts the new session in bypass mode. Never set it on your
-own: only when the user asked for it in this conversation or set it in their environment.
+`HANDOFF_SKIP_PERMISSIONS` belongs to the user's own shell environment. Never set,
+export or prefix it yourself, not even when asked in the chat: the user sets it.
 
 Then report: new tab is running, its name, and the handover path as a clickable
 `file://` URL. The permission to close this tab comes ONLY from step 3.
@@ -164,9 +169,12 @@ Then report: new tab is running, its name, and the handover path as a clickable
 
 Needs `HANDOFF_REMOTE_HOST` (an SSH alias) and Claude Code logged in on the server.
 On the server, handovers go to `~/handoffs`, repositories to `~/projects/<repo>`.
-`<repo>` and `<slug>` must match `^[A-Za-z0-9][A-Za-z0-9._-]*$` - check this before you
-build any command. Never set `HANDOFF_SKIP_PERMISSIONS` or bypass flags on the server
-unless the user asked for it in this conversation.
+Validate every value before you build a command - stop if one does not match:
+- `<repo>`: `^[A-Za-z0-9][A-Za-z0-9._-]*$`
+- `<slug>`: `^[A-Za-z0-9][A-Za-z0-9_-]*$` (no `.`: tmux reads it as window.pane)
+- `<url>`: `^(https://|ssh://|git@)[A-Za-z0-9._~:/@+-]+$` (no quotes, `$`, backticks, spaces)
+- `<HANDOVER_PATH>`: the file you wrote in step 1, `^[A-Za-z0-9/._~-]+\.md$`
+Never pass bypass flags on the server; that is the user's decision on the server.
 
 1. **Check first:**
    `ssh -o ConnectTimeout=5 -o BatchMode=yes "$HANDOFF_REMOTE_HOST" 'claude --version && mkdir -p -m 700 ~/handoffs ~/projects'`.
@@ -176,23 +184,25 @@ unless the user asked for it in this conversation.
    commit unasked). Without a push the server works on an old state - say so clearly.
    Then clone or update on the server:
    `ssh "$HANDOFF_REMOTE_HOST" 'cd ~/projects && if [ -d <repo> ]; then git -C <repo> pull --ff-only; else git clone -- "<url>" <repo>; fi'`.
-   Copy git-ignored but goal-relevant work files with `rsync`.
+   Git-ignored work files: list the exact files and ask the user before you copy them.
+   Never copy `.env` files, keys, tokens or credential files. Copy only approved files:
+   `rsync -a -- '<file>' "$HANDOFF_REMOTE_HOST":projects/<repo>/'<same relative path>'`.
 3. **Copy the handover and start the session.** Build the start command as a one-shot
    script quoted with `printf %q` (never splice the prompt into nested ssh quotes):
    ```bash
    S=$(mktemp)
    { echo 'rm -f -- "$0"'; printf 'cd ~/projects/%q || exit 1\n' "<repo>"; printf 'exec claude %q\n' "<START_PROMPT>"; } > "$S"
-   scp "<HANDOVER_PATH>" "$HANDOFF_REMOTE_HOST":handoffs/
-   scp "$S" "$HANDOFF_REMOTE_HOST":handoffs/start-<slug>.sh && rm -f "$S"
-   ssh "$HANDOFF_REMOTE_HOST" 'tmux new-session -d -s handoff-<slug> bash ~/handoffs/start-<slug>.sh'
+   chmod 600 '<HANDOVER_PATH>'
+   scp -p -- '<HANDOVER_PATH>' "$HANDOFF_REMOTE_HOST":handoffs/
+   scp -p -- "$S" "$HANDOFF_REMOTE_HOST":handoffs/start-<slug>.sh && rm -f "$S"
+   ssh "$HANDOFF_REMOTE_HOST" 'chmod 700 ~/handoffs && tmux new-session -d -s handoff-<slug> bash ~/handoffs/start-<slug>.sh'
    ```
    `<START_PROMPT>` is the prompt from `handoff_launch.sh`, with the remote handover path.
 4. **Follow-up:** wait ~25 s, then `ssh "$HANDOFF_REMOTE_HOST" 'tmux capture-pane -t handoff-<slug> -p | tail -15'`.
    If the trust dialog "Is this a project you created or one you trust?" shows up, do
    NOT answer it yourself: trusting a repository lets its hooks and MCP settings run code.
-   Tell the user to attach and decide - unless they said in this conversation that this
-   repository is theirs and may be trusted. Never type `/rename` into a dialog; wait for
-   the input prompt first, then send `/rename <name>` and `Enter` with `tmux send-keys`.
+   Tell the user to attach and decide. Never type anything into the remote session; the
+   tmux session name `handoff-<slug>` identifies it, and the user can `/rename` after attaching.
 5. **Report:** tmux session name, attach command
    `ssh -t "$HANDOFF_REMOTE_HOST" 'tmux attach -t handoff-<slug>'`. The permission to
    close the local tab comes ONLY from step 3.
