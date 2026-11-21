@@ -13,6 +13,7 @@
 set -uo pipefail
 CWD="${1:-}"; HO="${2:-}"; NAME="${3:-}"
 case "$NAME" in *[[:cntrl:]]*) echo "ERROR: session name contains control characters" >&2; exit 2 ;; esac
+NAME=$(printf '%s' "$NAME" | tr -d '$`;&|<>"\\')   # no shell metacharacters, even if typed into a shell
 [ -d "$CWD" ] || { echo "ERROR: project dir not found: $CWD" >&2; exit 2; }
 [ -f "$HO" ]  || { echo "ERROR: handover file not found: $HO" >&2; exit 2; }
 LAUNCH_MS=$(( $(date +%s) * 1000 ))
@@ -91,18 +92,22 @@ fi
 # Type /rename into exactly that tab (the user may have switched tabs meanwhile).
 # Text first without newline, short pause for the slash menu, then a real CR:
 # a plain newline only adds a line break in Claude Code's input box.
-R=$(osascript - "$ITERM_SID" "/rename $NAME" <<'EOF'
+# Two steps: type the text, re-check that claude is still in the foreground, then press Enter.
+# Text left without Enter in a plain shell is never executed.
+send() {  # $1 = text, $2 = "cr" for a carriage return
+  osascript - "$ITERM_SID" "$1" "$2" <<'EOF'
 on run argv
   set targetId to item 1 of argv
-  set theText to item 2 of argv
   tell application "iTerm"
     repeat with w in windows
       repeat with t in tabs of w
         repeat with s in sessions of t
           if id of s is targetId then
-            tell s to write text theText newline NO
-            delay 1.5
-            tell s to write text (ASCII character 13) newline NO
+            if item 3 of argv is "cr" then
+              tell s to write text (ASCII character 13) newline NO
+            else
+              tell s to write text (item 2 of argv) newline NO
+            end if
             return "found"
           end if
         end repeat
@@ -112,6 +117,10 @@ on run argv
   return "missing"
 end run
 EOF
-)
+}
+fg_ok() { kill -0 "$CPID" 2>/dev/null && ps -t "${TAB_TTY#/dev/}" -o stat=,pid= | awk -v p="$CPID" '$2==p && $1 ~ /\+/ {f=1} END {exit !f}'; }
+R=$(send "/rename $NAME" text)
+sleep 1.5
+if [ "$R" = "found" ] && fg_ok; then R=$(send "" cr); else R="missing"; fi
 if [ "$R" = "found" ]; then echo "Session $READY renamed: $NAME"
 else echo "WARNING: tab of the new session is gone - skipped /rename" >&2; exit 1; fi

@@ -190,8 +190,8 @@ I audited both the skill and the scripts before publishing. What you should know
 - **Remote mode never trusts a repository for you.** If Claude Code asks whether to trust
   a freshly cloned repository on the server, the skill stops and lets you decide: trusting
   it lets the repository's hooks and MCP settings run code. It validates host, repository,
-  URL and file names before building a command, asks before copying git-ignored files,
-  and never copies `.env` files, keys or credentials.
+  URL and file names before building a command, and never copies git-ignored files
+  (`.env`, keys, credentials) - it lists them and you copy what you need.
 - **Handover files stay private.** Folder mode 700, files mode 600, also on the server.
 - **Background check output is redacted.** URL credentials, `Bearer`/`Basic` values,
   `-u user:pass`, `--token`/`--password` values, `-p` values and `KEY=`/`TOKEN=` values are

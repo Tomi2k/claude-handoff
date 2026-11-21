@@ -170,6 +170,7 @@ Then report: new tab is running, its name, and the handover path as a clickable
 Needs `HANDOFF_REMOTE_HOST` (an SSH alias) and Claude Code logged in on the server.
 On the server, handovers go to `~/handoffs`, repositories to `~/projects/<repo>`.
 Validate every value before you build a command - stop if one does not match:
+- `$HANDOFF_REMOTE_HOST`: `^[A-Za-z0-9][A-Za-z0-9._@-]*$` (an SSH alias; always pass `--` before it)
 - `<repo>`: `^[A-Za-z0-9][A-Za-z0-9._-]*$`
 - `<slug>`: `^[A-Za-z0-9][A-Za-z0-9_-]*$` (no `.`: tmux reads it as window.pane)
 - `<url>`: `^(https://|ssh://|git@)[A-Za-z0-9._~:/@+-]+$` (no quotes, `$`, backticks, spaces)
@@ -177,16 +178,15 @@ Validate every value before you build a command - stop if one does not match:
 Never pass bypass flags on the server; that is the user's decision on the server.
 
 1. **Check first:**
-   `ssh -o ConnectTimeout=5 -o BatchMode=yes "$HANDOFF_REMOTE_HOST" 'claude --version && mkdir -p -m 700 ~/handoffs ~/projects'`.
+   `ssh -o ConnectTimeout=5 -o BatchMode=yes -- "$HANDOFF_REMOTE_HOST" 'claude --version && mkdir -p -m 700 ~/handoffs ~/projects'`.
    Not reachable or Claude Code missing: stop and tell the user what is missing.
 2. **Repository state** (only for git projects): check `git status`. Uncommitted
    goal-relevant changes: ask the user whether committing and pushing is OK (never
    commit unasked). Without a push the server works on an old state - say so clearly.
    Then clone or update on the server:
-   `ssh "$HANDOFF_REMOTE_HOST" 'cd ~/projects && if [ -d <repo> ]; then git -C <repo> pull --ff-only; else git clone -- "<url>" <repo>; fi'`.
-   Git-ignored work files: list the exact files and ask the user before you copy them.
-   Never copy `.env` files, keys, tokens or credential files. Copy only approved files:
-   `rsync -a -- '<file>' "$HANDOFF_REMOTE_HOST":projects/<repo>/'<same relative path>'`.
+   `ssh -- "$HANDOFF_REMOTE_HOST" 'cd ~/projects && if [ -d <repo> ]; then git -C <repo> pull --ff-only; else git clone -- "<url>" <repo>; fi'`.
+   Git-ignored work files are NOT copied by the skill. List the goal-relevant ones for
+   the user (never `.env` files, keys, tokens or credentials) and let the user copy them.
 3. **Copy the handover and start the session.** Build the start command as a one-shot
    script quoted with `printf %q` (never splice the prompt into nested ssh quotes):
    ```bash
@@ -195,16 +195,16 @@ Never pass bypass flags on the server; that is the user's decision on the server
    chmod 600 '<HANDOVER_PATH>'
    scp -p -- '<HANDOVER_PATH>' "$HANDOFF_REMOTE_HOST":handoffs/
    scp -p -- "$S" "$HANDOFF_REMOTE_HOST":handoffs/start-<slug>.sh && rm -f "$S"
-   ssh "$HANDOFF_REMOTE_HOST" 'chmod 700 ~/handoffs && tmux new-session -d -s handoff-<slug> bash ~/handoffs/start-<slug>.sh'
+   ssh -- "$HANDOFF_REMOTE_HOST" 'chmod 700 ~/handoffs && tmux new-session -d -s handoff-<slug> bash ~/handoffs/start-<slug>.sh'
    ```
    `<START_PROMPT>` is the prompt from `handoff_launch.sh`, with the remote handover path.
-4. **Follow-up:** wait ~25 s, then `ssh "$HANDOFF_REMOTE_HOST" 'tmux capture-pane -t handoff-<slug> -p | tail -15'`.
+4. **Follow-up:** wait ~25 s, then `ssh -- "$HANDOFF_REMOTE_HOST" 'tmux capture-pane -t handoff-<slug> -p | tail -15'`.
    If the trust dialog "Is this a project you created or one you trust?" shows up, do
    NOT answer it yourself: trusting a repository lets its hooks and MCP settings run code.
    Tell the user to attach and decide. Never type anything into the remote session; the
    tmux session name `handoff-<slug>` identifies it, and the user can `/rename` after attaching.
 5. **Report:** tmux session name, attach command
-   `ssh -t "$HANDOFF_REMOTE_HOST" 'tmux attach -t handoff-<slug>'`. The permission to
+   `ssh -t -- "$HANDOFF_REMOTE_HOST" 'tmux attach -t handoff-<slug>'`. The permission to
    close the local tab comes ONLY from step 3.
 
 ## Step 3 - Wrap-up: check the background, then the closing line (both modes)
