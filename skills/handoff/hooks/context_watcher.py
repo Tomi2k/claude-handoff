@@ -74,11 +74,14 @@ def last_usage(path):
             e = json.loads(line)
         except ValueError:
             continue
-        u = (e.get("message") or {}).get("usage") if isinstance(e, dict) else None
-        if u and "input_tokens" in u:
-            return (u.get("input_tokens", 0)
-                    + u.get("cache_read_input_tokens", 0)
-                    + u.get("cache_creation_input_tokens", 0))
+        m = e.get("message") if isinstance(e, dict) else None
+        u = m.get("usage") if isinstance(m, dict) else None
+        if not isinstance(u, dict) or "input_tokens" not in u:
+            continue
+        keys = ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
+        vals = [u.get(k) or 0 for k in keys]
+        if all(isinstance(v, int) and v >= 0 for v in vals):
+            return sum(vals)
     return None
 
 
@@ -133,7 +136,9 @@ def main():
         return
     os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
     os.chmod(STATE_DIR, 0o700)
-    with open(state_file, "w", encoding="utf-8") as f:
+    fd = os.open(state_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(f"{frac:.3f}")
 
     pct = int(frac * 100)
@@ -154,7 +159,7 @@ def main():
         start = (f"Tell the user in one sentence and ASK whether to hand off now. Do not start the "
                  f"handoff without their approval. If they approve: {step_rule} Then follow step 0 "
                  f"of the /handoff skill.")
-    msg = (f"[CONTEXT-WATCHER] The context window is ~{pct} % full ({used} of {WINDOW} tokens). "
+    msg = (f"[CONTEXT-WATCHER] (hook note) The context window is ~{pct} % full ({used} of {WINDOW} tokens). "
            f"{start} Do not invent the goal of the new session: if it is not clear from the "
            f"user's assignment, ask.")
     print(json.dumps({

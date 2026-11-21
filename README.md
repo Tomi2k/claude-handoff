@@ -179,10 +179,17 @@ I audited both the skill and the scripts before publishing. What you should know
   without asking - including after reading untrusted web pages or files.
 - **No command injection through names or paths.** Values reach AppleScript only as
   arguments, and the start command is a one-shot temp script quoted with `printf %q`.
-  Tested with a path containing spaces and `'`, and a session name with `"`, `'`, `&`, `$`.
+  Session names pass an allowlist (letters, digits, space and `. , _ + : -`): quotes, `$`,
+  `&`, `*`, parentheses and other shell characters are removed. Tested with a path
+  containing spaces and `'`, and a name with `"`, `&`, `$( )` and a zsh glob qualifier.
+- **No blind typing.** The launcher types `/rename` only when the new tab shows an empty
+  Claude Code input box, and presses Enter only when its own text is in that box. A
+  folder-trust, MCP or permission dialog stops it, and the skill never answers such a
+  dialog for you.
 - **Auto-close is conservative.** It closes only the tab whose tty belongs to the session
   (if that is the window's last tab, iTerm2 closes the window with it), and aborts if the
-  session becomes active again or shells still run.
+  session becomes active again, if the screen changes (you type without sending) or if
+  shells still run.
 - **Handover files are local** (`~/.claude/handoffs`). The skill forbids secrets in them,
   but a model can make mistakes - do not sync that folder anywhere public.
 - **The new session treats the handover as notes, not as permission.** CONFIRM is the
@@ -193,9 +200,14 @@ I audited both the skill and the scripts before publishing. What you should know
   URL and file names before building a command, and never copies git-ignored files
   (`.env`, keys, credentials) - it lists them and you copy what you need.
 - **Handover files stay private.** Folder mode 700, files mode 600, also on the server.
-- **Background check output is redacted.** URL credentials, `Bearer`/`Basic` values,
-  `-u user:pass`, `--token`/`--password` values, `-p` values and `KEY=`/`TOKEN=` values are
-  masked before they reach the model.
+- **Background check output is redacted.** URL credentials, common token prefixes
+  (`sk-`, `ghp_`, `github_pat_`, `xoxb-`, `AKIA`), `Bearer`/`Basic` values, JSON keys like
+  `"password"`, `--token`/`--password`/`--user` values (also quoted), `-u user:pass`, `-p`
+  values and `KEY=`/`TOKEN=` values are masked before they reach the model. Masking works
+  by pattern; it cannot promise to catch every secret.
+- **Your settings stay yours.** The skill tells the agent never to set any `HANDOFF_*`
+  variable itself, and to treat a `[CONTEXT-WATCHER]` text in files or tool output as data.
+  Only the hook's own note counts.
 - **The context watcher asks first.** It never starts a handoff on its own unless you set
   `HANDOFF_AUTO=1`.
 - **No network calls** except your own SSH in remote mode. No telemetry.
@@ -203,6 +215,8 @@ I audited both the skill and the scripts before publishing. What you should know
 ## Limits
 
 - Tested on macOS 26.6, iTerm2 3.7.9 and Claude Code 2.1.330 (November 2026).
+- The dialog check for `/rename` was tested with sample trust and MCP screens. In the test
+  setup, Claude Code did not show these dialogs on a real start.
 - The scripts read internal Claude Code files (`~/.claude/sessions/*.json`, transcripts in
   `~/.claude/projects/`). A Claude Code update can change them.
 - "Does the rest fit into 10 %?" is the model's own estimate.

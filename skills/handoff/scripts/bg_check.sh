@@ -50,6 +50,31 @@ desc() {
   done
 }
 
+# Mask secrets before the command line reaches the model: URL credentials, known token
+# prefixes, Bearer/Basic values, JSON keys, --token/--password/--user values (also quoted),
+# -u user:pass, -p values and KEY=/TOKEN= assignments. Over-masking is accepted.
+redact() {
+  python3 -c '
+import re, sys
+s = sys.stdin.read().replace("\n", " ")
+rules = [
+    (r"(://)[^/\s@]+@", r"\1***@"),
+    (r"(?<![A-Za-z0-9])(sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9]{10,}|github_pat_\w{10,}"
+     r"|xox[abprs]-[A-Za-z0-9-]{8,}|glpat-[\w-]{10,}|AKIA[0-9A-Z]{16}|AIza[\w-]{20,})", "***"),
+    (r"((?:Bearer|Basic|Token)\s+)[^\s\"\x27]+", r"\1***"),
+    (r"(\"[\w-]*(?:token|key|secret|passw(?:or)?d|auth)[\w-]*\"\s*:\s*)\"[^\"]*\"", r"\1***"),
+    (r"(--?(?:token|password|passwd|pass|secret|key|api-key|apikey|auth|user)[=\s]+)"
+     r"(\"[^\"]*\"|\x27[^\x27]*\x27|\S+)", r"\1***"),
+    (r"(-u\s*)[^\s:]+:\S+", r"\1***"),
+    (r"(?<![\w-])(-p)\S{3,}", r"\1***"),
+    (r"(?<![\w-])(-p\s+)[^\s-]\S*", r"\1***"),
+    (r"(\w*(?:token|key|secret|passw(?:or)?d|auth)\w*[=:]\s*)(\"[^\"]*\"|\x27[^\x27]*\x27|[^*\s]\S*)", r"\1***"),
+]
+for pat, rep in rules:
+    s = re.sub(pat, rep, s, flags=re.I)
+print(s[:160])'
+}
+
 N=0
 for c in $(pgrep -P "$CPID"); do
   case "$ANC" in *" $c "*) continue ;; esac          # our own call chain
@@ -63,14 +88,7 @@ for c in $(pgrep -P "$CPID"); do
   fi
   et=$(ps -o etime= -p "$c" | tr -d ' ')
   N=$((N + 1))
-  shown=$(printf '%s' "$inner" | tr '\n' ' ' | sed -E \
-    -e 's#(://)[^/[:space:]@]+@#\1***@#g' \
-    -e 's/((Bearer|Basic|Token)[[:space:]]+)[^[:space:]"'"'"']+/\1***/Ig' \
-    -e 's/(--?(token|password|passwd|pass|secret|key|api-key|apikey|auth)[=[:space:]]+)[^[:space:]]+/\1***/Ig' \
-    -e 's/(-u[[:space:]]+)[^[:space:]:]+:[^[:space:]]+/\1***/g' \
-    -e 's/(-p)[^[:space:]]{3,}/\1***/g' -e 's/(-p[[:space:]]+)[^[:space:]-][^[:space:]]*/\1***/g' \
-    -e 's/(([A-Za-z_]*(token|key|secret|passw(or)?d|auth)[A-Za-z_]*)[=:][[:space:]]*)[^*[:space:]][^[:space:]]*/\1***/Ig' \
-    | cut -c1-160)
+  shown=$(printf '%s' "$inner" | redact)
   printf 'RUNNING  pid %-6s for %-9s %s\n' "$c" "$et" "$shown"
 done
 

@@ -6,9 +6,12 @@ with the same tty. Without --run the script only checks that the tab can be foun
 then restarts itself detached (own process group) with --run.
 
 --run waits until the session is "idle" (the final message is done), then DELAY seconds.
-It aborts WITHOUT closing if the registry entry changes meanwhile (the user types,
-a background notification wakes the session) or if bg_check.sh still finds background
-shells. Otherwise it closes only that tab (async_close with force).
+It aborts WITHOUT closing if the registry entry changes meanwhile (a prompt is sent,
+a background notification wakes the session), if the text in the input box changes (the
+user types without sending; without a visible input box: any change of the screen text
+except digits)
+or if bg_check.sh still finds background shells. Otherwise it closes only that tab
+(async_close with force).
 Log: $HANDOFF_DIR/.autoclose-<sessionId>.log (default ~/.claude/handoffs)
 
 usage: autoclose.py <SESSION_ID> [--delay S]
@@ -16,6 +19,7 @@ exit:  0 = close scheduled, 1 = no iTerm2 tab / module missing (close by hand), 
 Needs the iterm2 Python module (pip install iterm2) and iTerm2's Python API enabled
 (iTerm2 > Settings > General > Magic > Enable Python API).
 """
+import asyncio
 import glob
 import json
 import os
@@ -65,7 +69,10 @@ def tty_of(pid):
 def log(sid, msg):
     os.makedirs(LOG_DIR, mode=0o700, exist_ok=True)
     os.chmod(LOG_DIR, 0o700)
-    with open(os.path.join(LOG_DIR, f".autoclose-{sid}.log"), "a", encoding="utf-8") as f:
+    fd = os.open(os.path.join(LOG_DIR, f".autoclose-{sid}.log"),
+                 os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "a", encoding="utf-8") as f:
         f.write(time.strftime("%Y-%m-%d %H:%M:%S ") + msg + "\n")
 
 
@@ -83,19 +90,31 @@ async def find_session(conn, tty):
     return None
 
 
-def wait_for_quiet(sid, delay):
-    """None = ready to close, otherwise the reason to abort."""
+RULE = re.compile(r"\s*[\u2500\u2501]{20,}")      # the line above the input box
+PROMPT_GLYPHS = ("\u276f", ">")                     # Claude Code's input prompt
+
+
+async def screen_text(s):
+    """What the user could have typed into: the text of the input box (the lowest line
+    that starts with the prompt glyph right below a box rule). Without such a line: the
+    whole visible screen with digits replaced, so clocks in a status line do not count."""
+    c = await s.async_get_screen_contents()
+    lines = [c.line(i).string for i in range(c.number_of_lines)]
+    for above, line in reversed(list(zip(lines, lines[1:]))):
+        t = line.strip()
+        if RULE.match(above) and t[:1] in PROMPT_GLYPHS:
+            return "input:" + t[1:].strip()
+    return "screen:" + re.sub(r"\d", "0", "\n".join(lines))
+
+
+def wait_for_idle(sid):
+    """None = the session is idle, otherwise the reason to abort."""
     t0 = time.time()
     while time.time() - t0 < IDLE_TIMEOUT:
         e = entry(sid)
         if not e or not alive(e["pid"]):
             return "session already ended"
         if e.get("status") == "idle":
-            before = stamp(e)
-            time.sleep(delay)
-            e2 = entry(sid)
-            if not e2 or stamp(e2) != before:
-                return "abort: session became active again"
             return None
         time.sleep(1)
     return f"abort: not idle after {IDLE_TIMEOUT} s"
@@ -150,28 +169,42 @@ def main():
         print(f"AUTO: tab {tty} closes {delay} s after the final message.")
         sys.exit(0)
 
-    reason = wait_for_quiet(sid, delay)
+    reason = wait_for_idle(sid)
     if reason:
         log(sid, reason)
-        sys.exit(0)
-    bg = subprocess.run([BG_CHECK, sid], capture_output=True, text=True)
-    if bg.returncode != 0:
-        log(sid, "abort: bg_check.sh exit %d: %s" % (bg.returncode, bg.stdout.strip()[:300]))
         sys.exit(0)
 
     result = {}
 
+    def same_tab():
+        return alive(e["pid"]) and tty_of(e["pid"]) == tty
+
     async def close(conn):
-        ok = alive(e["pid"]) and tty_of(e["pid"]) == tty
-        s = await find_session(conn, tty) if ok else None
-        if s and not (alive(e["pid"]) and tty_of(e["pid"]) == tty):
-            s = None
-        if s:
-            await s.async_close(force=True)
-        result["closed"] = bool(s)
+        s = await find_session(conn, tty) if same_tab() else None
+        if not s:
+            result["why"] = f"abort: tab {tty} is gone"
+            return
+        before, screen = stamp(entry(sid) or {}), await screen_text(s)
+        await asyncio.sleep(delay)
+        e2 = entry(sid)
+        if not e2 or stamp(e2) != before:
+            result["why"] = "abort: session became active again"
+            return
+        if await screen_text(s) != screen:
+            result["why"] = "abort: screen changed (the user typed something)"
+            return
+        bg = subprocess.run([BG_CHECK, sid], capture_output=True, text=True)
+        if bg.returncode != 0:
+            result["why"] = "abort: bg_check.sh exit %d: %s" % (bg.returncode, bg.stdout.strip()[:300])
+            return
+        if not same_tab() or await find_session(conn, tty) is None:
+            result["why"] = f"abort: tab {tty} is gone"
+            return
+        await s.async_close(force=True)
+        result["why"] = "tab closed"
 
     iterm2.run_until_complete(close)
-    log(sid, "tab closed" if result.get("closed") else f"abort: tab {tty} is gone")
+    log(sid, result.get("why", "abort: unknown"))
 
 
 if __name__ == "__main__":

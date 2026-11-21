@@ -13,7 +13,10 @@
 set -uo pipefail
 CWD="${1:-}"; HO="${2:-}"; NAME="${3:-}"
 case "$NAME" in *[[:cntrl:]]*) echo "ERROR: session name contains control characters" >&2; exit 2 ;; esac
-NAME=$(printf '%s' "$NAME" | tr -d '$`;&|<>"\\')   # no shell metacharacters, even if typed into a shell
+# Allowlist: letters, digits, space and . , _ + : - (en/em dash). No glob, quote or shell
+# characters survive, so the text is harmless even if it ever lands on a shell prompt.
+NAME=$(python3 -c 'import re,sys; s=re.sub(r"[^\w .,+:\u2013\u2014-]", "", sys.argv[1]); print(s.lstrip("-. ").strip()[:80])' "$NAME") \
+  || { echo "ERROR: python3 is needed to check the session name" >&2; exit 2; }
 [ -d "$CWD" ] || { echo "ERROR: project dir not found: $CWD" >&2; exit 2; }
 [ -f "$HO" ]  || { echo "ERROR: handover file not found: $HO" >&2; exit 2; }
 LAUNCH_MS=$(( $(date +%s) * 1000 ))
@@ -84,18 +87,11 @@ if [ -z "$READY" ]; then
   exit 1
 fi
 sleep 4  # let the TUI finish drawing
-# Never type into a plain shell: claude must still run in the foreground of the tab.
-if ! kill -0 "$CPID" 2>/dev/null || ! ps -t "${TAB_TTY#/dev/}" -o stat=,pid= | awk -v p="$CPID" '$2==p && $1 ~ /\+/ {f=1} END {exit !f}'; then
-  echo "WARNING: claude is not in the foreground of the new tab - skipped /rename" >&2; exit 1
-fi
 
-# Type /rename into exactly that tab (the user may have switched tabs meanwhile).
-# Text first without newline, short pause for the slash menu, then a real CR:
-# a plain newline only adds a line break in Claude Code's input box.
-# Two steps: type the text, re-check that claude is still in the foreground, then press Enter.
-# Text left without Enter in a plain shell is never executed.
-send() {  # $1 = text, $2 = "cr" for a carriage return
-  osascript - "$ITERM_SID" "$1" "$2" <<'EOF'
+# AppleScript helper for exactly that tab (the user may have switched tabs meanwhile).
+# $1 = "screen" (print the visible text), "text" (type $2 without newline) or "cr" (Enter).
+tab() {
+  osascript - "$ITERM_SID" "$1" "${2:-}" <<'EOF'
 on run argv
   set targetId to item 1 of argv
   tell application "iTerm"
@@ -103,10 +99,11 @@ on run argv
       repeat with t in tabs of w
         repeat with s in sessions of t
           if id of s is targetId then
-            if item 3 of argv is "cr" then
+            if item 2 of argv is "screen" then return contents of s
+            if item 2 of argv is "cr" then
               tell s to write text (ASCII character 13) newline NO
             else
-              tell s to write text (item 2 of argv) newline NO
+              tell s to write text (item 3 of argv) newline NO
             end if
             return "found"
           end if
@@ -118,9 +115,40 @@ on run argv
 end run
 EOF
 }
+# claude must still run in the foreground of the tab - never type into a plain shell.
 fg_ok() { kill -0 "$CPID" 2>/dev/null && ps -t "${TAB_TTY#/dev/}" -o stat=,pid= | awk -v p="$CPID" '$2==p && $1 ~ /\+/ {f=1} END {exit !f}'; }
-R=$(send "/rename $NAME" text)
+# The screen must show Claude Code's input box (a line of box characters, then the prompt
+# line) and no numbered choice: trust, MCP and permission dialogs show "❯ 1. ...".
+# $1 = what the input line must hold: "" (empty) or "/rename" (our typed text).
+input_is() {
+  tab screen | python3 -c '
+import re, sys
+want = sys.argv[1]
+lines = sys.stdin.read().splitlines()[-40:]
+if any(re.search(r"❯\s*\d+[.)]", l) or re.match(r"\s*[│|]?\s*>\s*\d+[.)]\s", l) for l in lines):
+    sys.exit(1)
+for above, line in reversed(list(zip(lines, lines[1:]))):  # the input box is the lowest one
+    t = line.strip()
+    if re.match(r"\s*[─━]{20,}", above) and t[:1] in ("❯", ">"):
+        rest = t[1:].strip()
+        sys.exit(0 if (rest == "" if want == "" else rest.startswith(want + " ")) else 1)
+sys.exit(1)' "$1"
+}
+
+if ! fg_ok; then echo "WARNING: claude is not in the foreground of the new tab - skipped /rename" >&2; exit 1; fi
+if ! input_is ""; then
+  echo "WARNING: the new tab does not show an empty Claude Code input box (dialog open?) - skipped /rename. Run /rename once by hand." >&2
+  exit 1
+fi
+# Two steps: type the text, check screen and foreground again, then press Enter.
+# A plain newline only adds a line break in Claude Code's input box, so Enter is a real CR.
+R=$(tab text "/rename $NAME")
 sleep 1.5
-if [ "$R" = "found" ] && fg_ok; then R=$(send "" cr); else R="missing"; fi
+if [ "$R" != "found" ]; then echo "WARNING: tab of the new session is gone - skipped /rename" >&2; exit 1; fi
+if ! fg_ok || ! input_is "/rename"; then
+  echo "WARNING: typed text is not in Claude Code's input box - did NOT press Enter. Check the new tab." >&2
+  exit 1
+fi
+R=$(tab cr)
 if [ "$R" = "found" ]; then echo "Session $READY renamed: $NAME"
 else echo "WARNING: tab of the new session is gone - skipped /rename" >&2; exit 1; fi
