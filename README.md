@@ -33,7 +33,10 @@ natural boundary* and let a fresh session do the next piece.
 
 Anthropic describes the same effect as **context rot**: "as the number of tokens in the
 context window increases, the model's ability to accurately recall information from that
-context decreases" - a gradient, not a hard cliff
+context decreases" - a gradient, not a hard cliff. The reason is that every token relates
+to every other token: the transformer "enables every token to attend to every other token
+across the entire context. This results in n² pairwise relationships for n tokens", and
+with a longer context that attention "gets stretched thin"
 ([Effective context engineering for AI agents](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents)).
 Chroma measured it across 18 models: reliability drops as input grows, even on simple tasks
 ([Context Rot](https://research.trychroma.com/context-rot)).
