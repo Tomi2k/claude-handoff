@@ -3,7 +3,8 @@
 # Works for Claude Code, Codex, agy and Grok; the CLI is found via the process tree.
 #   claude: every Bash tool shell (also run_in_background and Monitor) is a direct child of
 #           the claude process: "/bin/zsh -c source ~/.claude/shell-snapshots/... eval '<cmd>' ...".
-#   others: every direct child of the CLI that is a shell (zsh, bash, sh, dash, fish).
+#   others: every direct child of the CLI that is a shell (zsh, bash, sh, dash, fish) or that
+#           runs in its own terminal (agy starts commands directly in a new pty).
 # MCP servers (started without a shell), caffeinate and the shell running this check are
 # ignored. Background agents and workflows inside the CLI process are NOT visible here.
 #
@@ -30,7 +31,8 @@ if [ -z "$CPID" ]; then
   echo "ERROR: agent CLI process not found (check the session id)." >&2
   exit 2
 fi
-CLI=$(basename "$(ps -o comm= -p "$CPID" 2>/dev/null)")
+CLI=$(ps -o comm= -p "$CPID" 2>/dev/null); CLI="${CLI##*/}"
+CTTY=$(ps -o tty= -p "$CPID" 2>/dev/null | tr -d ' ')
 case "$CLI" in claude|codex|agy|grok) ;; *) echo "ERROR: pid $CPID is not claude, codex, agy or grok." >&2; exit 2 ;; esac
 # Our own call chain (this script and its parents) never counts.
 ANC=" $$ "
@@ -49,7 +51,7 @@ desc() {
     local next=""
     for k in $q; do
       local kc kn; kc=$(ps -ww -o command= -p "$k" 2>/dev/null)
-      kn=$(basename "$(ps -o comm= -p "$k" 2>/dev/null)" | tr -d -- -)
+      kn=$(ps -o comm= -p "$k" 2>/dev/null); kn="${kn##*/}"; kn="${kn#-}"
       case "$kn" in zsh|bash|sh|dash|fish) kc="" ;; esac   # wrapper shells are not the work itself
       case "$kc" in ""|*shell-snapshots/snapshot-*) ;; *) [ "$d" -gt 0 ] && { printf '%s\n' "$kc"; return; } ;; esac
       next="$next $(pgrep -P "$k" | tr '\n' ' ')"
@@ -93,7 +95,14 @@ for c in $(pgrep -P "$CPID"); do
     inner=$(printf '%s' "$cmd" | tr '\n' ' ' | sed -n "s/.* eval '\(.*\)' < \/dev\/null.*/\1/p" \
       | sed -e "s/'\"'\"'/'/g" -e "s/'\\\\''/'/g")
   else
-    case "$(basename "$(ps -o comm= -p "$c" 2>/dev/null)" | tr -d -- -)" in zsh|bash|sh|dash|fish) ;; *) continue ;; esac
+    # A tool process is a shell, or runs in its own terminal (agy starts commands directly
+    # in a new pty). MCP servers share the CLI's terminal and are not shells: they never count.
+    cn=$(ps -o comm= -p "$c" 2>/dev/null); cn="${cn##*/}"; cn="${cn#-}"
+    ct=$(ps -o tty= -p "$c" 2>/dev/null | tr -d ' ')
+    case "$cn" in
+      zsh|bash|sh|dash|fish) ;;
+      *) if [ -z "$ct" ] || [ "$ct" = "??" ] || [ "$ct" = "$CTTY" ]; then continue; fi ;;
+    esac
     inner=$(desc "$c" | head -1)   # the first non-shell process below it, e.g. "sleep 240"
     [ -n "$inner" ] || inner=$(printf '%s' "$cmd" | sed -E 's/^[^ ]*(zsh|bash|sh|dash|fish) +(-[a-z]+ +)*//')
   fi

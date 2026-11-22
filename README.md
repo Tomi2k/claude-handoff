@@ -23,7 +23,22 @@ closes the old tab by itself.
 
 ## Supported CLIs
 
-SUPPORT_TABLE
+Tested on macOS 26.6 with iTerm2 3.7.9 in November 2026. Each row was run for real: one
+CLI handed off to another through `/handoff`, and the new session read the handover file.
+
+| | Claude Code | Codex | Antigravity CLI (`agy`) | Grok |
+|---|---|---|---|---|
+| Tested version | 2.1.330 | 0.169.0 | 1.5.14 | 1.0.77 |
+| Starts the skill | `/handoff` | `$handoff` | `/handoff` | `/handoff` |
+| Opens as the new session and reads the handover | ✓ | not yet tested | ✓ | ✓ |
+| Hands off to another CLI | ✓ (to Grok) | not yet tested | ✓ (to Claude Code) | ✓ (to agy) |
+| Name of the new session | real `/rename` | tab title | tab title | tab title |
+| Old tab closes itself | ✓ (session registry) | not yet tested | ✓ (screen stops changing) | ✓ (screen stops changing) |
+| Background check | ✓ shells | not yet tested | ✓ own-terminal processes | ✓ shells |
+| Context measured | ✓ transcript | ✓ session file (offline test) | ✗ not measurable | ✓ `signals.json` |
+| Context watcher hook | ✓ | - | - | - |
+
+"Not yet tested" means exactly that. This table changes only after a real run.
 
 ## Why this exists
 
@@ -247,7 +262,25 @@ I audited both the skill and the scripts before publishing. What you should know
 
 ## Limits
 
-LIMITS_LIST
+- Tested versions: see the table above. Every CLI here can change its internal files with
+  an update: the scripts read `~/.claude/sessions/*.json` and transcripts (Claude Code),
+  `~/.codex/sessions/**/rollout-*.jsonl` (Codex) and `~/.grok/sessions/*/<id>/signals.json`
+  (Grok), and the session id variables each CLI sets for its shells.
+- macOS and iTerm2 only. Other terminals get the handover file and the closing line, but
+  no new tab, name or auto-close.
+- In agy the context is not measurable; the agent estimates whether the rest of a step fits.
+- In Codex, agy and Grok the name is the iTerm2 tab title. Another iTerm2 script that sets
+  tab titles itself can overwrite it.
+- Auto-close for Codex, agy and Grok decides "idle" from the screen: no change for 6 s and
+  no busy hint ("esc to interrupt", "esc to cancel", "Ctrl+c:cancel"). It never closes
+  while the screen still changes; after 15 minutes without a quiet screen it gives up and
+  the tab stays open.
+- If another skill is also named `handoff`, some CLIs ask you which one to run (Grok:
+  `/local:handoff`), and an agent can load the other one first.
+- The dialog check for Claude Code's `/rename` was tested with sample trust and MCP
+  screens. In the test setup, Claude Code did not show these dialogs on a real start.
+- "Does the rest fit into 10 %?" is the model's own estimate.
+- Remote mode is written as instructions for the model, not as a tested script.
 
 ## License
 
