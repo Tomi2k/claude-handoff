@@ -2,20 +2,28 @@
   <img src="assets/hero.png" alt="Session 1 fills up into the dumb zone. One handover file carries the goal into a clean Session 2." width="100%">
 </p>
 
-# claude-handoff
+# Perfect Handoff
 
-**Hand off a long Claude Code session to a fresh one - before the context window makes it dumb.**
+**Hand off a long agent session to a fresh one - before the context window makes it dumb.
+In Claude Code, Codex, Antigravity CLI or Grok, and from one of them to another.**
 
-A skill for [Claude Code](https://code.claude.com) made for terminal work in **iTerm2 on macOS**.
-It finishes the step you are in, writes a short, goal-filtered handover file, opens a new
-tab with a fresh session, gives it the same name with "- Part 2", waits until the old
-session's background work is done, and then closes the old tab by itself.
+A skill for terminal work in **iTerm2 on macOS**. It finishes the step you are in, writes a
+short, goal-filtered handover file, opens a new tab with a fresh session, gives it the same
+name with "- Part 2", waits until the old session's background work is done, and then
+closes the old tab by itself.
 
 ```
 /handoff finish the payment webhook and get the tests green
+/handoff to codex finish the payment webhook      # Claude quota used up? Continue in Codex.
 ```
 
+"Perfect" is the goal, not a claim. The table below shows what is tested and what is not.
+
 ---
+
+## Supported CLIs
+
+SUPPORT_TABLE
 
 ## Why this exists
 
@@ -43,21 +51,21 @@ Chroma measured it across 18 models: reliability drops as input grows, even on s
 
 ### What I kept running into
 
-In my own long Claude Code sessions, mistakes start to pile up from about half of the
-context window: instructions from 20 turns ago are forgotten, fixed bugs come back. That is
-my experience, not a benchmark. Large windows (1M tokens) do not fix it; they only make the
-slow part longer.
-
-Handing off by hand was not much better. These are the failures this skill fixes:
+In my own long sessions, mistakes start to pile up from about half of the context window:
+instructions from 20 turns ago are forgotten, fixed bugs come back. That is my experience,
+not a benchmark. Large windows (1M tokens) do not fix it; they only make the slow part
+longer. And I work with more than one CLI: when one quota runs out, the work has to go on
+in another one without losing the thread.
 
 | Problem I hit | What the skill does |
 |---|---|
-| The session gets sloppy and I notice too late. | A hook measures the fill level on every prompt. At a threshold you choose, Claude asks you whether to hand off. |
+| The session gets sloppy and I notice too late. | In Claude Code a hook measures the fill level on every prompt and asks you whether to hand off. In Codex and Grok the skill measures it when you start it. |
 | The handoff cut a step in half. The new session started with a half-done edit. | It finishes the running step first if the rest fits into 10 % of the window. Otherwise it stops at the next clean point. |
 | The new session "continued" although the work was done, and invented its own next tasks. | A fixed rule decides between **CONTINUE** and **CONFIRM**. Assigned work and own suggestions are separate lists. Suggestions never run without your OK. |
 | I copied context by hand and forgot the important part. | A goal-filtered handover file: state, decisions, files, next steps, traps - and nothing else. |
-| Ten tabs, all called "claude". Which one was it? | The new session gets the old name plus "- Part 2" through a real `/rename`. |
-| "Can I close this terminal now?" Background shells were still running. | It checks the old session's background work, waits for it, and ends with one fixed line. When everything is done, the old tab closes itself. |
+| One quota is empty, the task is half done. | `/handoff to <cli>` continues in Claude Code, Codex, agy or Grok. The handover file is plain Markdown that every CLI reads. |
+| Ten tabs, all called "claude". Which one was it? | The new session gets the old name plus "- Part 2". |
+| "Can I close this terminal now?" Background shells were still running. | It checks the old session's background shells, waits for them, and ends with one fixed line. When everything is done, the old tab closes itself. |
 
 ---
 
@@ -65,22 +73,28 @@ Handing off by hand was not much better. These are the failures this skill fixes
 
 1. **Finish the step.** It measures the context and finishes the running step if the
    rest fits into the budget (10 % of the window, never past 85 %).
-2. **Background inventory.** It lists background shells (dev servers, builds, agents)
-   so nothing dies silently.
-3. **Handover file.** `~/.claude/handoffs/<date>-<slug>.md` with goal, verified state,
-   files, decisions, mode, next steps and traps. Filtered by the goal, no secrets.
-4. **New session.** A new tab in the same iTerm2 window starts Claude Code with the
-   handover file and is renamed to "<old name> - Part 2".
-5. **Wrap-up.** The old session waits for its background work, delivers late results as
-   an addendum, and ends with exactly one line:
+2. **Background inventory.** It lists background shells (dev servers, builds) so nothing
+   dies silently.
+3. **Handover file.** `~/.claude/handoffs/<date>-<slug>.md` (the same folder for every
+   CLI) with goal, verified state, files, decisions, mode, next steps and traps. Filtered
+   by the goal, no secrets.
+4. **New session.** A new tab in the same iTerm2 window starts the CLI you chose with the
+   handover file and gives it the old name plus "- Part 2".
+5. **Wrap-up.** The old session waits for its background work, adds late results to the
+   handover file, and ends with exactly one line:
 
    | Situation | Last line |
    |---|---|
    | Still running | `⏳ Do NOT close this terminal yet. ...` |
-   | Done, iTerm2 | `✅ All done. This terminal closes itself in 10 s. ...` |
-   | Done, other terminal | `✅ You can and should close this terminal now. (Cmd+W closes only this tab.)` |
+   | Done, auto-close works | `✅ All done. This terminal closes itself in 10 s. ...` |
+   | Done, no auto-close | `✅ You can and should close this terminal now. (Cmd+W closes only this tab.)` |
 
-   Type anything into the old tab within those 10 seconds and it stays open.
+   Type text into the old tab's input box within those 10 seconds and it stays open.
+
+The scripts find their own session through the process tree (the nearest `claude`,
+`codex`, `agy` or `grok` process and its terminal), so the model never has to pass a
+session id. Everything mechanical is a script; the skill file says what to do and what
+to avoid, so the model runs one command instead of improvising.
 
 **Remote mode** (`/handoff remote <goal>`): the handover goes to a server over SSH and
 Claude Code runs there in tmux. It keeps working when your laptop is closed, and you can
@@ -90,15 +104,38 @@ attach from your phone.
 
 ## Install
 
-Requirements: macOS, [iTerm2](https://iterm2.com), Claude Code, `jq`, Python 3.
+Requirements: macOS, [iTerm2](https://iterm2.com), Python 3, `jq`, and at least one of
+Claude Code, Codex, Antigravity CLI (`agy`) or Grok.
 
 ```bash
-git clone https://github.com/Tomi2k/claude-handoff.git
-mkdir -p ~/.claude/skills
-cp -r claude-handoff/skills/handoff ~/.claude/skills/
+git clone https://github.com/Tomi2k/perfect-handoff.git
+cd perfect-handoff
+./install.sh
 ```
 
-**Context watcher hook** (recommended) - add to `~/.claude/settings.json`:
+`install.sh` copies the scripts to `~/.local/share/perfect-handoff/` and the skill file to
+every CLI it finds:
+
+| CLI | Skill file |
+|---|---|
+| Claude Code | `~/.claude/skills/handoff/SKILL.md` |
+| Codex | `~/.codex/skills/handoff/SKILL.md` |
+| Antigravity CLI | `~/.gemini/config/skills/handoff/SKILL.md` |
+| Grok | `~/.grok/skills/handoff/SKILL.md` (Grok also reads `~/.claude/skills/`) |
+
+An existing skill named `handoff` that is not from Perfect Handoff stays untouched
+(`./install.sh --force` replaces it). `./install.sh --uninstall` removes only what it installed.
+
+**Auto-close and tab titles** need the iTerm2 Python API:
+
+1. Enable iTerm2 > Settings > General > Magic > *Enable Python API*.
+2. Run `./install.sh --iterm2` once. It creates `~/.local/share/perfect-handoff/venv` with
+   the `iterm2` module (version 2.22 from PyPI). The scripts find it by themselves. Or point
+   `HANDOFF_ITERM2_PYTHON` to a Python that has the module.
+
+Without it, everything else works; the skill tells you to close the tab yourself.
+
+**Context watcher hook** (Claude Code only, recommended) - add to `~/.claude/settings.json`:
 
 ```json
 {
@@ -108,7 +145,7 @@ cp -r claude-handoff/skills/handoff ~/.claude/skills/
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ~/.claude/skills/handoff/hooks/context_watcher.py 2>/dev/null || true",
+            "command": "python3 ~/.local/share/perfect-handoff/hooks/context_watcher.py 2>/dev/null || true",
             "timeout": 10
           }
         ]
@@ -118,57 +155,53 @@ cp -r claude-handoff/skills/handoff ~/.claude/skills/
 }
 ```
 
-**Auto-close** (optional) - needs the iTerm2 Python API:
-
-1. Enable iTerm2 > Settings > General > Magic > *Enable Python API*.
-2. Install the module: `python3 -m pip install iterm2`
-   (or point `HANDOFF_ITERM2_PYTHON` to a Python that has it).
-
-Without it, everything works; the skill tells you to close the tab yourself.
-
 The first launch asks macOS to let your terminal control iTerm2 (Automation). Allow it.
 
 ## Use
 
-```
-/handoff <goal in your own words>
-/handoff remote <goal>
-```
+| CLI | Start the skill |
+|---|---|
+| Claude Code | `/handoff <goal>` |
+| Codex | `$handoff <goal>` |
+| Antigravity CLI | `/handoff <goal>` |
+| Grok | `/handoff <goal>` (if another skill is also called `handoff`, Grok asks for `/local:handoff`) |
 
-No goal? The skill asks one question: *What should the new session achieve?* It never
-invents the goal. With the hook installed, Claude asks you at the threshold whether to
-hand off - and after your yes it still finishes the running step first. Set
-`HANDOFF_AUTO=1` if you want it to hand off without asking.
+Options, in this order: `remote`, then `to claude|codex|agy|grok`, then the goal.
+Without `to`, the new session runs in the same CLI. No goal? The skill asks one question:
+*What should the new session achieve?* It never invents the goal.
 
 ## Configure
 
+All settings are environment variables in your own shell profile. The skill tells the
+agent never to set them itself, except `HANDOFF_MODEL` when you ask for a model in the chat.
+
 | Variable | Default | Effect |
 |---|---|---|
-| `HANDOFF_WATCH_AT` | `0.5` | Fraction of the window that triggers the suggestion. |
-| `HANDOFF_WATCH_TOKENS` | - | Absolute trigger, whichever comes first. `150000` follows the smart-zone advice on 1M windows. |
-| `CLAUDE_CONTEXT_WINDOW` | `200000` (`1000000` if the model has `[1m]`) | Window size used for the percentages. |
+| `HANDOFF_WATCH_AT` | `0.5` | Claude Code hook: fraction of the window that triggers the suggestion. |
+| `HANDOFF_WATCH_TOKENS` | - | Claude Code hook: absolute trigger, whichever comes first. `150000` follows the smart-zone advice on 1M windows. |
+| `CLAUDE_CONTEXT_WINDOW` | `200000` (`1000000` if the model has `[1m]`) | Window size used for Claude Code percentages. Codex and Grok report their own window. |
 | `HANDOFF_DIR` | `~/.claude/handoffs` | Where handover files and small state files go. |
-| `HANDOFF_MODEL` | - | Model alias for the new session, e.g. `opus`. |
-| `HANDOFF_SKIP_PERMISSIONS` | `0` | `1` starts the new session with `--dangerously-skip-permissions`. Set it only in your own shell profile; the skill never sets it. Read *Security* first. |
-| `HANDOFF_AUTO` | `0` | `1` lets the context watcher start the handoff without asking you first. |
-| `HANDOFF_ITERM2_PYTHON` | `python3` | Python with the `iterm2` module, for auto-close. |
+| `HANDOFF_MODEL` | - | Model for the new session (passed as `--model`). |
+| `HANDOFF_SKIP_PERMISSIONS` | `0` | `1` starts the new session without permission prompts: `--dangerously-skip-permissions` (Claude Code, agy), `--dangerously-bypass-approvals-and-sandbox` (Codex), `--always-approve` (Grok). Read *Security* first. |
+| `HANDOFF_AUTO` | `0` | `1` lets the Claude Code watcher start the handoff without asking you first. |
+| `HANDOFF_ITERM2_PYTHON` | - | Python with the `iterm2` module, for auto-close and tab titles. Not needed after `./install.sh --iterm2`. |
 | `HANDOFF_REMOTE_HOST` | - | SSH alias for remote mode. On the server: `~/handoffs` and `~/projects/<repo>`. |
 
 ## What is in the box
 
 ```
+install.sh                    installs scripts and skill files for every CLI found
 skills/handoff/
-├── SKILL.md                  the instructions Claude follows
-├── hooks/context_watcher.py  UserPromptSubmit hook + `--status` for the skill
+├── SKILL.md                  the instructions the agent follows (one file for all CLIs)
+├── hooks/context_watcher.py  Claude Code hook + `--status` (Claude Code, Codex, Grok)
 └── scripts/
-    ├── handoff_launch.sh     new iTerm2 tab, start Claude Code, type /rename
+    ├── phself.py             which CLI am I, which pid, which terminal, which session
+    ├── handoff_launch.sh     new iTerm2 tab, start the chosen CLI, set the name
     ├── handoff_title.sh      read the current name, build "... - Part N"
+    ├── tabtitle.py           read or set the iTerm2 tab title (Codex, agy, Grok)
     ├── bg_check.sh           list background shells of the session
     └── autoclose.py          close the old tab once the session is idle
 ```
-
-The rule behind the split: the skill file says *what to do and what to avoid*; everything
-mechanical is a script, so the model runs one command instead of improvising.
 
 ## Security
 
@@ -180,16 +213,17 @@ I audited both the skill and the scripts before publishing. What you should know
 - **No command injection through names or paths.** Values reach AppleScript only as
   arguments, and the start command is a one-shot temp script quoted with `printf %q`.
   Session names pass an allowlist (letters, digits, space and `. , _ + : -`): quotes, `$`,
-  `&`, `*`, parentheses and other shell characters are removed. Tested with a path
-  containing spaces and `'`, and a name with `"`, `&`, `$( )` and a zsh glob qualifier.
-- **No blind typing.** The launcher types `/rename` only when the new tab shows an empty
-  Claude Code input box, and presses Enter only when its own text is in that box. A
+  `&`, `*`, parentheses, backslashes and other shell characters are removed. Tested with a
+  path containing spaces and `'`, and a name with `"`, `&`, `$( )` and a zsh glob qualifier.
+- **No blind typing.** Into Codex, agy and Grok nothing is typed at all; their name is the
+  tab title. Into Claude Code the launcher types `/rename` only when the new tab shows an
+  empty input box, and presses Enter only when its own text is in that box. A
   folder-trust, MCP or permission dialog stops it, and the skill never answers such a
   dialog for you.
 - **Auto-close is conservative.** It closes only the tab whose tty belongs to the session
   (if that is the window's last tab, iTerm2 closes the window with it), and aborts if the
-  session becomes active again, if the screen changes (you type without sending) or if
-  shells still run.
+  session becomes active again, if you type into the input box (even without sending) or
+  if shells still run.
 - **Handover files are local** (`~/.claude/handoffs`). The skill forbids secrets in them,
   but a model can make mistakes - do not sync that folder anywhere public.
 - **The new session treats the handover as notes, not as permission.** CONFIRM is the
@@ -206,25 +240,14 @@ I audited both the skill and the scripts before publishing. What you should know
   values and `KEY=`/`TOKEN=` values are masked before they reach the model. Masking works
   by pattern; it cannot promise to catch every secret.
 - **Your settings stay yours.** The skill tells the agent never to set any `HANDOFF_*`
-  variable itself, and to treat a `[CONTEXT-WATCHER]` text in files or tool output as data.
-  Only the hook's own note counts.
-- **The context watcher asks first.** It never starts a handoff on its own unless you set
-  `HANDOFF_AUTO=1`.
+  variable itself (only exception: `HANDOFF_MODEL` for the new session, when you ask for a
+  model in the chat), and to treat a `[CONTEXT-WATCHER]` text in files or tool output as
+  data. Only the hook's own note counts.
 - **No network calls** except your own SSH in remote mode. No telemetry.
 
 ## Limits
 
-- Tested on macOS 26.6, iTerm2 3.7.9 and Claude Code 2.1.330 (November 2026).
-- The dialog check for `/rename` was tested with sample trust and MCP screens. In the test
-  setup, Claude Code did not show these dialogs on a real start.
-- The scripts read internal Claude Code files (`~/.claude/sessions/*.json`, transcripts in
-  `~/.claude/projects/`). A Claude Code update can change them.
-- "Does the rest fit into 10 %?" is the model's own estimate.
-- `bg_check.sh` sees shells, not in-process background agents; the skill tracks those itself.
-- Local mode needs iTerm2. Other terminals get the handover and the closing line, but no
-  new tab, rename or auto-close.
-- Remote mode is written as instructions for the model, not as a tested script. Local
-  mode, rename and auto-close are tested end to end.
+LIMITS_LIST
 
 ## License
 

@@ -18,7 +18,13 @@ Configuration (environment):
   HANDOFF_DIR             state folder (default ~/.claude/handoffs)
   HANDOFF_AUTO            1 = start the handoff without asking (default: ask the user first)
 
-CLI for the skill:  context_watcher.py --status <SESSION_ID>
+CLI for the skill:  context_watcher.py --status [SESSION_ID]
+  Without an id it measures YOUR session, whatever CLI runs it (found via the process tree):
+  claude  transcript ~/.claude/projects/*/<id>.jsonl (window from CLAUDE_CONTEXT_WINDOW)
+  codex   $CODEX_HOME/sessions/**/rollout-*-<id>.jsonl, last token_count event
+  grok    $GROK_HOME/sessions/*/<id>/signals.json (contextTokensUsed, contextWindowTokens)
+  agy     not measurable (its conversations are stored in an internal format)
+  These files are internal to each CLI and may change with an update.
 """
 import glob
 import json
@@ -31,6 +37,9 @@ FINISH_BUDGET = 0.10   # share of the window allowed to finish a running step
 HARD_LIMIT = 0.85      # from here on: no finishing, only a clean stop
 
 CONFIG_DIR = os.environ.get("CLAUDE_CONFIG_DIR", os.path.expanduser("~/.claude"))
+CODEX_HOME = os.path.expanduser(os.environ.get("CODEX_HOME", "~/.codex"))
+GROK_HOME = os.path.expanduser(os.environ.get("GROK_HOME", "~/.grok"))
+SID_RE = re.compile(r"[0-9A-Za-z_-]{8,64}")
 STATE_DIR = os.path.expanduser(os.environ.get("HANDOFF_DIR", "~/.claude/handoffs"))
 
 
@@ -85,18 +94,70 @@ def last_usage(path):
     return None
 
 
-def status(sid):
-    if not re.fullmatch(r"[0-9A-Za-z-]{8,64}", sid):
-        print("ERROR: unexpected session id.")
+def tail_lines(path, size=400_000):
+    try:
+        with open(path, "rb") as f:
+            f.seek(max(0, os.path.getsize(path) - size))
+            return f.read().decode("utf-8", "replace").splitlines()
+    except OSError:
+        return []
+
+
+def codex_usage(sid):
+    paths = glob.glob(os.path.join(CODEX_HOME, "sessions", "*", "*", "*", f"rollout-*-{sid}.jsonl"))
+    if not paths:
+        return None
+    for line in reversed(tail_lines(max(paths, key=os.path.getmtime))):
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        pl = e.get("payload") if isinstance(e, dict) else None
+        info = pl.get("info") if isinstance(pl, dict) and pl.get("type") == "token_count" else None
+        last = info.get("last_token_usage") if isinstance(info, dict) else None
+        if isinstance(last, dict):
+            used, window = last.get("input_tokens"), info.get("model_context_window")
+            if isinstance(used, int) and isinstance(window, int) and window > 0:
+                return used, window
+    return None
+
+
+def grok_usage(sid):
+    for path in glob.glob(os.path.join(GROK_HOME, "sessions", "*", sid, "signals.json")):
+        try:
+            with open(path, encoding="utf-8") as f:
+                d = json.load(f)
+        except (OSError, ValueError):
+            continue
+        used = d.get("contextTokensUsed") if isinstance(d, dict) else None
+        window = d.get("contextWindowTokens") if isinstance(d, dict) else None
+        if isinstance(used, int) and isinstance(window, int) and window > 0:
+            return used, window
+    return None
+
+
+def status(cli, sid):
+    if not sid or not SID_RE.fullmatch(sid):
+        print("ERROR: unexpected or missing session id.")
         sys.exit(2)
-    paths = glob.glob(os.path.join(CONFIG_DIR, "projects", "*", f"{sid}.jsonl"))
-    used = last_usage(paths[0]) if paths else None
-    if not used:
-        print("ERROR: no transcript with usage data found for this session.")
+    if cli == "agy":
+        print("Context: not measurable for agy. Estimate the rest yourself; when unsure, use case C.")
+        return
+    if cli == "codex":
+        r = codex_usage(sid)
+    elif cli == "grok":
+        r = grok_usage(sid)
+    else:
+        paths = glob.glob(os.path.join(CONFIG_DIR, "projects", "*", f"{sid}.jsonl"))
+        used = last_usage(paths[0]) if paths else None
+        r = (used, WINDOW) if used else None
+    if not r:
+        print(f"ERROR: no usage data found for this {cli} session.")
         sys.exit(2)
-    frac = used / WINDOW
-    budget = min(int(WINDOW * FINISH_BUDGET), max(0, int(WINDOW * HARD_LIMIT) - used))
-    print(f"Context: {used // 1000}k of {WINDOW // 1000}k tokens ({int(frac * 100)} %).")
+    used, window = r
+    frac = used / window
+    budget = min(int(window * FINISH_BUDGET), max(0, int(window * HARD_LIMIT) - used))
+    print(f"Context: {used // 1000}k of {window // 1000}k tokens ({int(frac * 100)} %, {cli}).")
     if frac >= HARD_LIMIT:
         print(f"Finish the running step: no, context is at {int(HARD_LIMIT * 100)} % or more (case C).")
     else:
@@ -105,8 +166,17 @@ def status(sid):
 
 
 def main():
-    if len(sys.argv) == 3 and sys.argv[1] == "--status":
-        status(sys.argv[2])
+    if len(sys.argv) in (2, 3) and sys.argv[1] == "--status":
+        if len(sys.argv) == 3:
+            status("claude", sys.argv[2])
+            return
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts"))
+        import phself
+        me = phself.find()
+        if not me:
+            print("ERROR: no claude, codex, agy or grok process among the ancestors.")
+            sys.exit(2)
+        status(me["cli"], me["sid"])
         return
     try:
         inp = json.load(sys.stdin)
