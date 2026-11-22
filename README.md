@@ -31,8 +31,8 @@ CLI handed off to another through `/handoff`, and the new session read the hando
 | Tested version | 2.1.330 | 0.169.0 | 1.5.14 | 1.0.77 |
 | Starts the skill | `/handoff` | `$handoff` | `/handoff` | `/handoff` |
 | Opens as the new session and reads the handover | ✓ | not yet tested | ✓ | ✓ |
-| Hands off to another CLI | ✓ (to Grok) | not yet tested | ✓ (to Claude Code) | ✓ (to agy) |
-| Name of the new session | real `/rename` | tab title | tab title | tab title |
+| Hands off to another CLI | ✓ (to Grok) | not yet tested | ✓ (to Claude Code, to Grok) | ✓ (to agy) |
+| Carries the name over ("... - Part 2") | ✓ real `/rename` | not yet tested (tab title set ✓) | ✓ tab title | ✓ tab title |
 | Old tab closes itself | ✓ (session registry) | not yet tested | ✓ (screen stops changing) | ✓ (screen stops changing) |
 | Background check | ✓ shells | not yet tested | ✓ own-terminal processes | ✓ shells |
 | Context measured | ✓ transcript | ✓ session file (offline test) | ✗ not measurable | ✓ `signals.json` |
@@ -270,7 +270,10 @@ I audited both the skill and the scripts before publishing. What you should know
   no new tab, name or auto-close.
 - In agy the context is not measurable; the agent estimates whether the rest of a step fits.
 - In Codex, agy and Grok the name is the iTerm2 tab title. Another iTerm2 script that sets
-  tab titles itself can overwrite it.
+  tab titles itself can overwrite it (seen on the test machine; the name tests ran with
+  that script paused).
+- Two handoffs ran at the same time from the same folder without mixing up tabs: every
+  script finds its session through the terminal (tty), not through folder or start time.
 - Auto-close for Codex, agy and Grok decides "idle" from the screen: no change for 6 s and
   no busy hint ("esc to interrupt", "esc to cancel", "Ctrl+c:cancel"). It never closes
   while the screen still changes; after 15 minutes without a quiet screen it gives up and
