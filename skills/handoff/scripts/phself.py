@@ -39,17 +39,16 @@ def tty_of(pid):
 
 
 def reexec_for_iterm2():
-    """The iterm2 module is missing in this Python: restart the same script with a Python
-    that has it - $HANDOFF_ITERM2_PYTHON (the user's setting) or the venv that
-    install.sh --iterm2 creates. Returns only if there is none."""
+    """The iterm2 module is missing in this Python: restart the same script, isolated (-I),
+    with the fixed venv that install.sh --iterm2 creates. No interpreter path is read from
+    the environment. Returns only if there is no such venv."""
     if os.environ.get("PH_REEXEC") == "1":
         return
-    for cand in (os.environ.get("HANDOFF_ITERM2_PYTHON"),
-                 os.path.expanduser("~/.local/share/perfect-handoff/venv/bin/python")):
-        if cand and os.path.isfile(cand) and os.access(cand, os.X_OK) \
-                and os.path.abspath(cand) != os.path.abspath(sys.executable):
-            os.environ["PH_REEXEC"] = "1"
-            os.execv(cand, [cand] + sys.argv)
+    cand = os.path.expanduser("~/.local/share/perfect-handoff/venv/bin/python")
+    if os.path.isfile(cand) and os.access(cand, os.X_OK) \
+            and os.path.abspath(cand) != os.path.abspath(sys.executable):
+        os.environ["PH_REEXEC"] = "1"
+        os.execv(cand, [cand, "-I"] + sys.argv)
 
 
 def find(start=None):

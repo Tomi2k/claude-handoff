@@ -94,6 +94,11 @@ def last_usage(path):
     return None
 
 
+def finish_budget(used, window):
+    """Tokens left to finish a running step: 10 % of the window, never past 85 %."""
+    return min(int(window * FINISH_BUDGET), max(0, int(window * HARD_LIMIT) - used))
+
+
 def tail_lines(path, size=400_000):
     try:
         with open(path, "rb") as f:
@@ -156,7 +161,7 @@ def status(cli, sid):
         sys.exit(2)
     used, window = r
     frac = used / window
-    budget = min(int(window * FINISH_BUDGET), max(0, int(window * HARD_LIMIT) - used))
+    budget = finish_budget(used, window)
     print(f"Context: {used // 1000}k of {window // 1000}k tokens ({int(frac * 100)} %, {cli}).")
     if frac >= HARD_LIMIT:
         print(f"Finish the running step: no, context is at {int(HARD_LIMIT * 100)} % or more (case C).")
@@ -204,22 +209,28 @@ def main():
         pass
     if last_warned >= THRESHOLD and frac < last_warned + STEP:
         return
-    os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
-    os.chmod(STATE_DIR, 0o700)
-    fd = os.open(state_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:  # never follow a symlink, never take over a folder of another user
+        os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
+        if os.stat(STATE_DIR).st_uid != os.getuid():
+            return
+        os.chmod(STATE_DIR, 0o700)
+        fd = os.open(state_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    except OSError:
+        return
     os.fchmod(fd, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(f"{frac:.3f}")
 
     pct = int(frac * 100)
-    budget = int(WINDOW * FINISH_BUDGET)
+    budget = finish_budget(used, WINDOW)
     if frac >= HARD_LIMIT:
         step_rule = (f"The context is nearly full ({int(HARD_LIMIT * 100)} % or more): do not finish "
                      f"the step any more. Only reach a clean stopping point (no half-done edit), "
                      f"then hand off right away.")
     else:
         step_rule = (f"If a step is running (including the one just assigned), finish and verify "
-                     f"it first when the rest fits into about {budget} tokens (10 % of the window). "
+                     f"it first when the rest fits into about {budget} tokens (at most 10 % of the "
+                     f"window, never past {int(HARD_LIMIT * 100)} %). "
                      f"If it does not fit, work up to the next clean stopping point. "
                      f"Do not start a new step.")
     if os.environ.get("HANDOFF_AUTO") == "1":

@@ -23,8 +23,9 @@ closes the old tab by itself.
 
 ## Supported CLIs
 
-Tested on macOS 26.6 with iTerm2 3.7.9 in November 2026. Each row was run for real: one
-CLI handed off to another through `/handoff`, and the new session read the handover file.
+Tested on macOS 26.6 with iTerm2 3.7.9 in November 2026. Real end-to-end runs through
+`/handoff` (old tab closed itself, new session read the handover file): Claude Code → Grok,
+Grok → agy, agy → Claude Code, agy → Grok. Codex is not tested end to end yet.
 
 | | Claude Code | Codex | Antigravity CLI (`agy`) | Grok |
 |---|---|---|---|---|
@@ -32,10 +33,10 @@ CLI handed off to another through `/handoff`, and the new session read the hando
 | Starts the skill | `/handoff` | `$handoff` | `/handoff` | `/handoff` |
 | Opens as the new session and reads the handover | ✓ | not yet tested | ✓ | ✓ |
 | Hands off to another CLI | ✓ (to Grok) | not yet tested | ✓ (to Claude Code, to Grok) | ✓ (to agy) |
-| Carries the name over ("... - Part 2") | ✓ real `/rename` | not yet tested (tab title set ✓) | ✓ tab title | ✓ tab title |
+| Carries the name over ("... - Part 2") | ✓ `--name` at start | not yet tested (tab title set ✓) | ✓ tab title | ✓ tab title |
 | Old tab closes itself | ✓ (session registry) | not yet tested | ✓ (screen stops changing) | ✓ (screen stops changing) |
 | Background check | ✓ shells | not yet tested | ✓ own-terminal processes | ✓ shells |
-| Context measured | ✓ transcript | ✓ session file (offline test) | ✗ not measurable | ✓ `signals.json` |
+| Context measured | ✓ transcript | session file read from a stored session, not live | ✗ not measurable | ✓ `signals.json` |
 | Context watcher hook | ✓ | - | - | - |
 
 "Not yet tested" means exactly that. This table changes only after a real run.
@@ -104,7 +105,7 @@ in another one without losing the thread.
    | Done, auto-close works | `✅ All done. This terminal closes itself in 10 s. ...` |
    | Done, no auto-close | `✅ You can and should close this terminal now. (Cmd+W closes only this tab.)` |
 
-   Type text into the old tab's input box within those 10 seconds and it stays open.
+   The old tab closes only if every check passes; on any doubt it stays open.
 
 The scripts find their own session through the process tree (the nearest `claude`,
 `codex`, `agy` or `grok` process and its terminal), so the model never has to pass a
@@ -145,8 +146,8 @@ An existing skill named `handoff` that is not from Perfect Handoff stays untouch
 
 1. Enable iTerm2 > Settings > General > Magic > *Enable Python API*.
 2. Run `./install.sh --iterm2` once. It creates `~/.local/share/perfect-handoff/venv` with
-   the `iterm2` module (version 2.22 from PyPI). The scripts find it by themselves. Or point
-   `HANDOFF_ITERM2_PYTHON` to a Python that has the module.
+   the `iterm2` module (version 2.22, downloaded from PyPI). The scripts find it by
+   themselves.
 
 Without it, everything else works; the skill tells you to close the tab yourself.
 
@@ -160,7 +161,7 @@ Without it, everything else works; the skill tells you to close the tab yourself
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ~/.local/share/perfect-handoff/hooks/context_watcher.py 2>/dev/null || true",
+            "command": "python3 -I ~/.local/share/perfect-handoff/hooks/context_watcher.py 2>/dev/null || true",
             "timeout": 10
           }
         ]
@@ -199,7 +200,6 @@ agent never to set them itself, except `HANDOFF_MODEL` when you ask for a model 
 | `HANDOFF_MODEL` | - | Model for the new session (passed as `--model`). |
 | `HANDOFF_SKIP_PERMISSIONS` | `0` | `1` starts the new session without permission prompts: `--dangerously-skip-permissions` (Claude Code, agy), `--dangerously-bypass-approvals-and-sandbox` (Codex), `--always-approve` (Grok). Read *Security* first. |
 | `HANDOFF_AUTO` | `0` | `1` lets the Claude Code watcher start the handoff without asking you first. |
-| `HANDOFF_ITERM2_PYTHON` | - | Python with the `iterm2` module, for auto-close and tab titles. Not needed after `./install.sh --iterm2`. |
 | `HANDOFF_REMOTE_HOST` | - | SSH alias for remote mode. On the server: `~/handoffs` and `~/projects/<repo>`. |
 
 ## What is in the box
@@ -224,25 +224,37 @@ I audited both the skill and the scripts before publishing. What you should know
 
 - **Bypass mode is opt-in.** `HANDOFF_SKIP_PERMISSIONS=1` starts the new session without
   permission prompts. Only use it if you understand what an agent can do on your machine
-  without asking - including after reading untrusted web pages or files.
+  without asking - including after reading untrusted web pages or files. The scripts read
+  it from the environment and cannot tell your setting from one an agent puts in front of
+  a command. The skill forbids that; your CLI's command approval is the real boundary.
 - **No command injection through names or paths.** Values reach AppleScript only as
   arguments, and the start command is a one-shot temp script quoted with `printf %q`.
   Session names pass an allowlist (letters, digits, space and `. , _ + : -`): quotes, `$`,
   `&`, `*`, parentheses, backslashes and other shell characters are removed. Tested with a
   path containing spaces and `'`, and a name with `"`, `&`, `$( )` and a zsh glob qualifier.
-- **No blind typing.** Into Codex, agy and Grok nothing is typed at all; their name is the
-  tab title. Into Claude Code the launcher types `/rename` only when the new tab shows an
-  empty input box, and presses Enter only when its own text is in that box. A
-  folder-trust, MCP or permission dialog stops it, and the skill never answers such a
-  dialog for you.
-- **Auto-close is conservative.** It closes only the tab whose tty belongs to the session
-  (if that is the window's last tab, iTerm2 closes the window with it), and aborts if the
-  session becomes active again, if you type into the input box (even without sending) or
-  if shells still run.
-- **Handover files are local** (`~/.claude/handoffs`). The skill forbids secrets in them,
-  but a model can make mistakes - do not sync that folder anywhere public.
-- **The new session treats the handover as notes, not as permission.** CONFIRM is the
-  default; CONTINUE only covers work you assigned, quoted with date.
+- **Nothing is typed into the new session.** The start command carries the handover
+  prompt and, for Claude Code, the name (`--name`). Codex, agy and Grok get the name as
+  the tab title. The new tab opens in the window of the old session, not in whichever
+  window has the focus. Dialogs (folder trust, MCP servers, permissions) are always yours
+  to answer.
+- **No code from the project folder.** All Python runs with `python3 -I`, so a module in
+  the folder you hand off (for example a planted `re.py`) is never imported.
+- **Auto-close keeps the tab on any doubt.** It closes only the tab whose tty and iTerm2
+  session belong to the old session (if that is the window's last tab, iTerm2 closes the
+  window with it). It keeps the tab open if it cannot recognise an empty input box, if
+  anything appears in the input box or on the screen during the countdown (checked every
+  second), if the session becomes active again, if the background check does not report
+  "no background shell", or if the CLI is no longer in the foreground of its tab. It is
+  still a heuristic for Codex, agy and Grok: "idle" means a quiet screen without a busy
+  hint (see *Limits*).
+- **Handover files are stored locally** (`~/.claude/handoffs`, folder 700, files 600). The
+  skill forbids secrets in them, but a model can make mistakes - do not sync that folder
+  anywhere public. The new session reads the file, so its contents go to the model
+  provider of the CLI you hand off to, like everything else you type there.
+- **The handover file is trusted.** CONFIRM is the default; CONTINUE needs work you
+  assigned, quoted with date, and the new session first checks that the work is still
+  open. The quote lives in the same file: whoever can write to `~/.claude/handoffs` can
+  make a new session continue work. Keep that folder private.
 - **Remote mode never trusts a repository for you.** If Claude Code asks whether to trust
   a freshly cloned repository on the server, the skill stops and lets you decide: trusting
   it lets the repository's hooks and MCP settings run code. It validates host, repository,
@@ -250,15 +262,18 @@ I audited both the skill and the scripts before publishing. What you should know
   (`.env`, keys, credentials) - it lists them and you copy what you need.
 - **Handover files stay private.** Folder mode 700, files mode 600, also on the server.
 - **Background check output is redacted.** URL credentials, common token prefixes
-  (`sk-`, `ghp_`, `github_pat_`, `xoxb-`, `AKIA`), `Bearer`/`Basic` values, JSON keys like
-  `"password"`, `--token`/`--password`/`--user` values (also quoted), `-u user:pass`, `-p`
-  values and `KEY=`/`TOKEN=` values are masked before they reach the model. Masking works
-  by pattern; it cannot promise to catch every secret.
+  (`sk-`, `ghp_`, `github_pat_`, `xoxb-`, `AKIA`), `Bearer`/`Basic` values, header values
+  (`-H`, `--header`), cookies, JSON keys like `"password"`, `--token`/`--password`/`--user`
+  values (also quoted), `-u user:pass`, `-p` values and `KEY=`/`TOKEN=` values are masked
+  before they reach the model. Masking works by pattern; it cannot promise to catch every
+  secret. The auto-close log never contains command text.
 - **Your settings stay yours.** The skill tells the agent never to set any `HANDOFF_*`
   variable itself (only exception: `HANDOFF_MODEL` for the new session, when you ask for a
   model in the chat), and to treat a `[CONTEXT-WATCHER]` text in files or tool output as
   data. Only the hook's own note counts.
-- **No network calls** except your own SSH in remote mode. No telemetry.
+- **No telemetry.** The scripts make no network calls. Network traffic comes only from
+  `./install.sh --iterm2` (PyPI download), remote mode (your SSH and Git), and the CLIs
+  themselves talking to their model providers.
 
 ## Limits
 
@@ -266,8 +281,11 @@ I audited both the skill and the scripts before publishing. What you should know
   an update: the scripts read `~/.claude/sessions/*.json` and transcripts (Claude Code),
   `~/.codex/sessions/**/rollout-*.jsonl` (Codex) and `~/.grok/sessions/*/<id>/signals.json`
   (Grok), and the session id variables each CLI sets for its shells.
-- macOS and iTerm2 only. Other terminals get the handover file and the closing line, but
-  no new tab, name or auto-close.
+- macOS and iTerm2 only. Started from another terminal, the new session opens in a new
+  iTerm2 window; the old terminal gets no auto-close.
+- `bg_check.sh` counts shells and, for Codex, agy and Grok, processes in their own
+  terminal. Work that a CLI starts directly on its own terminal without a shell is not
+  seen; MCP servers are ignored on purpose.
 - In agy the context is not measurable; the agent estimates whether the rest of a step fits.
 - In Codex, agy and Grok the name is the iTerm2 tab title. Another iTerm2 script that sets
   tab titles itself can overwrite it (seen on the test machine; the name tests ran with
@@ -280,8 +298,6 @@ I audited both the skill and the scripts before publishing. What you should know
   the tab stays open.
 - If another skill is also named `handoff`, some CLIs ask you which one to run (Grok:
   `/local:handoff`), and an agent can load the other one first.
-- The dialog check for Claude Code's `/rename` was tested with sample trust and MCP
-  screens. In the test setup, Claude Code did not show these dialogs on a real start.
 - "Does the rest fit into 10 %?" is the model's own estimate.
 - Remote mode is written as instructions for the model, not as a tested script.
 

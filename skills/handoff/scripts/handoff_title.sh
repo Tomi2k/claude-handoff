@@ -6,7 +6,7 @@
 #        Claude Code: the LAST custom-title event in your own transcript (every /rename
 #        appends one), so the name the user gave most recently wins; fallback: the
 #        session registry. Codex, agy, Grok: the iTerm2 tab title of your own tab
-#        (needs the iterm2 module: install.sh --iterm2 or HANDOFF_ITERM2_PYTHON).
+#        (needs the iterm2 module: install.sh --iterm2).
 #        Never guess by "latest session": parallel sessions in the same folder exist.
 #   handoff_title.sh next "<old name>"
 #     -> prints the follow-up name: "... - Part N" is incremented, otherwise
@@ -21,10 +21,10 @@ case "${1:-}" in
   current)
     own="${2:-}"
     if [ -z "$own" ]; then
-      IFS=$'\t' read -r cli _pid tty sid < <(python3 "$HERE/phself.py") || { echo "ERROR: own CLI not found" >&2; exit 2; }
+      IFS=$'\t' read -r cli _pid tty sid < <(python3 -I "$HERE/phself.py") || { echo "ERROR: own CLI not found" >&2; exit 2; }
       if [ "$cli" != "claude" ]; then
         [ "$tty" = "-" ] && exit 0
-        name=$(python3 "$HERE/tabtitle.py" get "$tty" 2>/dev/null || true)
+        name=$(python3 -I "$HERE/tabtitle.py" get "$tty" 2>/dev/null || true)
         case "$name" in MANUAL:*|"") exit 0 ;; esac
         echo "$name|$sid"; exit 0
       fi

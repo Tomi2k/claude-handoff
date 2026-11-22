@@ -1,26 +1,30 @@
 #!/usr/bin/env python3
-"""Handoff wrap-up: closes the iTerm2 tab of your own agent session by itself.
+"""Handoff wrap-up: closes the iTerm2 tab of your own agent session by itself - but only
+when every check passes. On any doubt the tab stays open and the user closes it.
 
 Works for Claude Code, Codex, agy and Grok. The script finds its own CLI by walking up
 the process tree (phself.py): CLI pid -> tty -> the iTerm2 session with the same tty.
-Without --run it only checks that the tab can be found and then restarts itself
-detached (own process group) with --run.
+Without --run it checks that the tab can be found and then restarts itself detached
+(own process group) with --run and that exact identity.
 
 --run waits until the session is idle (the final message is done):
   claude  the session registry says "idle" (~/.claude/sessions/*.json)
-  others  the screen stops changing for QUIET seconds and shows no busy marker
-Then it waits DELAY seconds more. It aborts WITHOUT closing if the text in the input box
-changes meanwhile (the user types, even without sending; without a visible input box:
-any change of the screen text except digits), if the session becomes active again
-(claude: registry entry changes; others: a busy marker appears), or if bg_check.sh
-still finds background shells. Otherwise it closes only that tab (async_close with force).
-Log: $HANDOFF_DIR/.autoclose-<cli>-<pid>.log (default ~/.claude/handoffs), mode 0600.
+  others  the screen stops changing for QUIET seconds and shows no busy hint
+It aborts WITHOUT closing
+  - if no input box is recognised, or the input box is not empty (a draft is never lost),
+  - if, during the DELAY seconds that follow (checked every second), the input box changes,
+    the session becomes active again (claude: registry; others: screen or busy hint), or
+  - if bg_check.sh does not report "no background shell", or
+  - if the CLI is no longer in the foreground of that exact iTerm2 session.
+Otherwise it closes only that tab (async_close with force).
+Log: $HANDOFF_DIR/.autoclose-<cli>-<pid>.log (default ~/.claude/handoffs), mode 0600,
+without command text.
 
 usage: autoclose.py [--delay S]
 exit:  0 = close scheduled, 1 = no iTerm2 tab / module missing (close by hand), 2 = error
 Needs the iterm2 Python module and iTerm2's Python API enabled (iTerm2 > Settings >
 General > Magic > Enable Python API). Without the module in this Python, the script
-restarts itself with $HANDOFF_ITERM2_PYTHON or ~/.local/share/perfect-handoff/venv.
+restarts itself with ~/.local/share/perfect-handoff/venv (install.sh --iterm2).
 """
 import asyncio
 import glob
@@ -39,7 +43,7 @@ try:
     import iterm2
 except ImportError:
     phself.reexec_for_iterm2()
-    print("MANUAL: Python module 'iterm2' is missing (./install.sh --iterm2, or pip install iterm2).")
+    print("MANUAL: Python module 'iterm2' is missing (./install.sh --iterm2).")
     sys.exit(1)
 
 SESS_DIR = os.path.expanduser("~/.claude/sessions")
@@ -47,10 +51,15 @@ LOG_DIR = os.path.expanduser(os.environ.get("HANDOFF_DIR", "~/.claude/handoffs")
 BG_CHECK = os.path.join(HERE, "bg_check.sh")
 IDLE_TIMEOUT = 900  # s: longest wait for the final message to finish
 QUIET = 6           # s: screen without change = turn is over (CLIs without a registry)
-RULE = re.compile(r"\s*[╭┌]?[─━]{20,}")   # line above an input box
-PROMPT_GLYPHS = ("❯", ">", "›")                       # ❯ > ›
+RULE = re.compile(r"\s*[╭┌]?[─━]{20,}")  # line above an input box
 # Hints that the CLIs show only while a turn runs (lower case, bottom of the screen).
 BUSY = ("esc to interrupt", "esc to cancel", "ctrl+c:cancel", "generating...", "generating…")
+# Grey hint texts that some CLIs show in an EMPTY input box.
+PLACEHOLDERS = (
+    re.compile(r".*\(shift\+tab to cycle\)$"),        # agy
+    re.compile(r'Try ".*"$'),                           # Claude Code tips
+    re.compile(r"(Ask Codex to do anything|Ask a follow-up question)$"),  # Codex
+)
 
 
 def entry(sid):
@@ -75,10 +84,16 @@ def alive(pid):
 
 
 def log(name, msg):
-    os.makedirs(LOG_DIR, mode=0o700, exist_ok=True)
-    os.chmod(LOG_DIR, 0o700)
-    fd = os.open(os.path.join(LOG_DIR, f".autoclose-{name}.log"),
-                 os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    """Append to the private log. Never follows a symlink; skips a folder of another user."""
+    try:
+        os.makedirs(LOG_DIR, mode=0o700, exist_ok=True)
+        if os.stat(LOG_DIR).st_uid != os.getuid():
+            return
+        os.chmod(LOG_DIR, 0o700)
+        fd = os.open(os.path.join(LOG_DIR, f".autoclose-{name}.log"),
+                     os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
+    except OSError:
+        return
     os.fchmod(fd, 0o600)
     with os.fdopen(fd, "a", encoding="utf-8") as f:
         f.write(time.strftime("%Y-%m-%d %H:%M:%S ") + msg + "\n")
@@ -86,6 +101,15 @@ def log(name, msg):
 
 def stamp(e):
     return (e.get("status"), e.get("statusUpdatedAt"), e.get("updatedAt"))
+
+
+def in_foreground(pid, cli, tty):
+    """The CLI still runs in the foreground of its terminal (not suspended, no editor on top)."""
+    out = subprocess.run(["ps", "-o", "stat=,comm=", "-p", str(pid)],
+                         capture_output=True, text=True).stdout.strip()
+    if not out or "+" not in out.split()[0]:
+        return False
+    return os.path.basename(out.split(None, 1)[1]) == cli and phself.tty_of(pid) == tty
 
 
 async def find_session(conn, tty):
@@ -103,22 +127,29 @@ async def screen_lines(s):
     return [c.line(i).string for i in range(c.number_of_lines)]
 
 
-def input_text(lines):
-    """What the user could have typed into: the input box - the lowest line that starts
-    with a prompt glyph right below a box rule (also inside a box: "│ ❯ ... │"), plus
-    every line below it up to the next rule (multi-line input). Typed spaces count; only
-    the padding at the right end of a line does not. Without such a box: the whole
-    screen with digits replaced, so clocks in a status line do not count."""
-    for i in range(len(lines) - 1, 0, -1):
+def input_box(lines):
+    """The input box: the lowest line that starts with a prompt glyph (❯ or > right below a
+    box rule, also inside a box "│ ❯ ... │"; or Codex's ›), plus every line below it up to
+    the next rule. Returns its text after the glyph, or None if no box is recognised."""
+    while lines and not lines[-1].strip():
+        lines = lines[:-1]
+    for i in range(len(lines) - 1, max(-1, len(lines) - 31), -1):
         t = lines[i].strip().strip("│|").strip()
-        if RULE.match(lines[i - 1]) and t[:1] in PROMPT_GLYPHS:
-            box = [lines[i].rstrip()]
+        glyph, above = t[:1], (lines[i - 1] if i > 0 else "")
+        if (glyph in ("❯", ">") and RULE.match(above)) or glyph == "›":
+            box = [t[1:].strip()]
             for more in lines[i + 1:]:
-                if RULE.match(more) or more.strip()[:1] in ("╰", "└"):
+                m = more.strip().strip("│|").strip()
+                if RULE.match(more) or more.strip()[:1] in ("╰", "└") or not m:
                     break
-                box.append(more.rstrip())
-            return "input:" + "\n".join(box)
-    return "screen:" + re.sub(r"\d", "0", "\n".join(lines))
+                box.append(m)
+            return "\n".join(box)
+    return None
+
+
+def is_empty(text):
+    t = (text or "").replace(" ", " ").strip()
+    return t == "" or any(p.fullmatch(t) for p in PLACEHOLDERS)
 
 
 def busy(lines):
@@ -126,14 +157,18 @@ def busy(lines):
     return any(b in text for b in BUSY)
 
 
+def normalized(lines):
+    return re.sub(r"\d", "0", "\n".join(lines))
+
+
 async def wait_quiet(s, pid):
-    """CLIs without a registry: idle = same screen for QUIET s and no busy marker."""
+    """CLIs without a registry: idle = same screen for QUIET s and no busy hint."""
     t0, last, since = time.time(), None, time.time()
     while time.time() - t0 < IDLE_TIMEOUT:
         if not alive(pid):
             return "session already ended"
         lines = await screen_lines(s)
-        snap = re.sub(r"\d", "0", "\n".join(lines))
+        snap = normalized(lines)
         if snap != last or busy(lines):
             last, since = snap, time.time()
         elif time.time() - since >= QUIET:
@@ -154,7 +189,7 @@ def wait_registry_idle(sid):
     return f"abort: not idle after {IDLE_TIMEOUT} s"
 
 
-def run_close(cli, pid, tty, sid, delay):
+def run_close(cli, pid, tty, sid, iterm_id, delay):
     name = f"{cli}-{pid}"
     if cli == "claude":
         reason = wait_registry_idle(sid)
@@ -163,13 +198,10 @@ def run_close(cli, pid, tty, sid, delay):
             return
     result = {}
 
-    def same_tab():
-        return alive(pid) and phself.tty_of(pid) == tty
-
     async def close(conn):
-        s = await find_session(conn, tty) if same_tab() else None
-        if not s:
-            result["why"] = f"abort: tab {tty} is gone"
+        s = await find_session(conn, tty) if alive(pid) and phself.tty_of(pid) == tty else None
+        if not s or s.session_id != iterm_id:
+            result["why"] = f"abort: tab {tty} is gone or not the same iTerm2 session"
             return
         if cli != "claude":
             reason = await wait_quiet(s, pid)
@@ -177,26 +209,34 @@ def run_close(cli, pid, tty, sid, delay):
                 result["why"] = reason
                 return
         before = stamp(entry(sid) or {}) if cli == "claude" else None
-        typed = input_text(await screen_lines(s))
-        await asyncio.sleep(delay)
-        if cli == "claude":
-            e2 = entry(sid)
-            if not e2 or stamp(e2) != before:
+        lines = await screen_lines(s)
+        box, screen = input_box(lines), normalized(lines)
+        if box is None:
+            result["why"] = "abort: no input box recognised - close by hand"
+            return
+        if not is_empty(box):
+            result["why"] = "abort: the input box is not empty (a draft stays)"
+            return
+        for _ in range(delay):          # watch every second, not only at the end
+            await asyncio.sleep(1)
+            lines = await screen_lines(s)
+            if input_box(lines) != box:
+                result["why"] = "abort: the input box changed (the user typed something)"
+                return
+            if cli == "claude":
+                e2 = entry(sid)
+                if not e2 or e2.get("status") != "idle" or stamp(e2) != before:
+                    result["why"] = "abort: session became active again"
+                    return
+            elif busy(lines) or normalized(lines) != screen:
                 result["why"] = "abort: session became active again"
                 return
-        lines = await screen_lines(s)
-        if input_text(lines) != typed:
-            result["why"] = "abort: screen changed (the user typed something)"
-            return
-        if cli != "claude" and busy(lines):
-            result["why"] = "abort: session became active again"
-            return
         bg = subprocess.run([BG_CHECK, "--pid", str(pid)], capture_output=True, text=True)
         if bg.returncode != 0:
-            result["why"] = "abort: bg_check.sh exit %d: %s" % (bg.returncode, bg.stdout.strip()[:300])
+            result["why"] = f"abort: bg_check.sh exit {bg.returncode} (background work or unknown state)"
             return
-        if not same_tab() or await find_session(conn, tty) is None:
-            result["why"] = f"abort: tab {tty} is gone"
+        if not in_foreground(pid, cli, tty) or await find_session(conn, tty) is None:
+            result["why"] = "abort: the CLI is not in the foreground of its tab any more"
             return
         await s.async_close(force=True)
         result["why"] = "tab closed"
@@ -214,13 +254,15 @@ def main():
         except (IndexError, ValueError):
             print("ERROR: --delay needs a number of seconds.", file=sys.stderr)
             sys.exit(2)
-    if "--run" in args:  # internal: the detached watcher
+    if "--run" in args:  # internal: the detached watcher, started below with checked values
         try:
             i = args.index("--run")
-            cli, pid, tty, sid = args[i + 1], int(args[i + 2]), args[i + 3], args[i + 4]
+            cli, pid, tty, sid, iterm_id = args[i + 1], int(args[i + 2]), args[i + 3], args[i + 4], args[i + 5]
         except (IndexError, ValueError):
             sys.exit(2)
-        run_close(cli, pid, tty, None if sid == "-" else sid, delay)
+        if cli not in phself.SESSION_VARS or not in_foreground(pid, cli, tty):
+            sys.exit(2)
+        run_close(cli, pid, tty, None if sid == "-" else sid, iterm_id, delay)
         return
 
     me = phself.find()
@@ -251,12 +293,12 @@ def main():
     if not found.get("id"):
         print(f"MANUAL: no iTerm2 tab with {tty} found.")
         sys.exit(1)
-    subprocess.Popen([sys.executable, os.path.abspath(__file__), "--delay", str(delay),
-                      "--run", cli, str(pid), tty, sid or "-"],
+    subprocess.Popen([sys.executable, "-I", os.path.abspath(__file__), "--delay", str(delay),
+                      "--run", cli, str(pid), tty, sid or "-", found["id"]],
                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                      stderr=subprocess.DEVNULL, start_new_session=True)
     log(f"{cli}-{pid}", f"scheduled: {cli}, iTerm2 {found['id'][:8]} ({tty}), {delay} s after idle")
-    print(f"AUTO: tab {tty} closes {delay} s after the final message.")
+    print(f"AUTO: tab {tty} closes {delay} s after the final message, if every check passes.")
     sys.exit(0)
 
 

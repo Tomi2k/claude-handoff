@@ -24,8 +24,8 @@ elif [ -n "${1:-}" ]; then
     if [[ "$p" =~ ^[1-9][0-9]{0,6}$ ]] && [ "$p" -gt 1 ] && kill -0 "$p" 2>/dev/null; then CPID="$p"; break; fi
   done
 fi
-if [ -z "$CPID" ] && [ "${1:-}" != "--pid" ]; then
-  CPID=$(python3 "$HERE/phself.py" 2>/dev/null | cut -f2)
+if [ -z "${1:-}" ]; then
+  CPID=$(python3 -I "$HERE/phself.py" 2>/dev/null | cut -f2)
 fi
 if [ -z "$CPID" ]; then
   echo "ERROR: agent CLI process not found (check the session id)." >&2
@@ -64,7 +64,7 @@ desc() {
 # prefixes, Bearer/Basic values, JSON keys, --token/--password/--user values (also quoted),
 # -u user:pass, -p values and KEY=/TOKEN= assignments. Over-masking is accepted.
 redact() {
-  python3 -c '
+  python3 -I -c '
 import re, sys
 s = sys.stdin.read().replace("\n", " ")
 rules = [
@@ -72,6 +72,9 @@ rules = [
     (r"(?<![A-Za-z0-9])(sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9]{10,}|github_pat_\w{10,}"
      r"|xox[abprs]-[A-Za-z0-9-]{8,}|glpat-[\w-]{10,}|AKIA[0-9A-Z]{16}|AIza[\w-]{20,})", "***"),
     (r"((?:Bearer|Basic|Token)\s+)[^\s\"\x27]+", r"\1***"),
+    (r"((?:-H|--header)[=\s]*)(\"[^\"]*\"|\x27[^\x27]*\x27|\S+)", r"\1***"),
+    (r"((?:set-)?cookie\s*[:=]\s*)[^\"\x27]+", r"\1***"),
+    (r"(-b\s+)(\"[^\"]*\"|\x27[^\x27]*\x27|\S+)", r"\1***"),
     (r"(\"[\w-]*(?:token|key|secret|passw(?:or)?d|auth)[\w-]*\"\s*:\s*)\"[^\"]*\"", r"\1***"),
     (r"(--?(?:token|password|passwd|pass|secret|key|api-key|apikey|auth|user)[=\s]+)"
      r"(\"[^\"]*\"|\x27[^\x27]*\x27|\S+)", r"\1***"),
@@ -91,9 +94,14 @@ for c in $(pgrep -P "$CPID"); do
   cmd=$(ps -ww -o command= -p "$c" 2>/dev/null) || continue
   inner=""
   if [ "$CLI" = "claude" ]; then
-    case "$cmd" in *shell-snapshots/snapshot-*) ;; *) continue ;; esac
-    inner=$(printf '%s' "$cmd" | tr '\n' ' ' | sed -n "s/.* eval '\(.*\)' < \/dev\/null.*/\1/p" \
-      | sed -e "s/'\"'\"'/'/g" -e "s/'\\\\''/'/g")
+    case "$cmd" in
+      *shell-snapshots/snapshot-*)
+        inner=$(printf '%s' "$cmd" | tr '\n' ' ' | sed -n "s/.* eval '\(.*\)' < \/dev\/null.*/\1/p" \
+          | sed -e "s/'\"'\"'/'/g" -e "s/'\\\\''/'/g") ;;
+      *) # a shell in an unknown layout (a Claude Code update?) counts as running work
+        cn=$(ps -o comm= -p "$c" 2>/dev/null); cn="${cn##*/}"; cn="${cn#-}"
+        case "$cn" in zsh|bash|sh|dash|fish) inner="(shell, unknown layout) $(desc "$c" | head -1)" ;; *) continue ;; esac ;;
+    esac
   else
     # A tool process is a shell, or runs in its own terminal (agy starts commands directly
     # in a new pty). MCP servers share the CLI's terminal and are not shells: they never count.
