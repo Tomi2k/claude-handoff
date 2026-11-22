@@ -265,8 +265,11 @@ I audited both the skill and the scripts before publishing. What you should know
   assigned, quoted with date, and the new session first checks that the work is still
   open. The quote lives in the same file: whoever can write to `~/.claude/handoffs` can
   make a new session continue work. Keep that folder private. The launcher accepts only
-  your own regular file directly in that folder (absolute path, no symlink, not readable
-  or writable by others, a plain `.md` name) - not a file from a project or a download.
+  your own regular file directly in that folder (real absolute path, no symlink, not
+  readable or writable by others, a plain `.md` name, at most 24 hours old). The new tab
+  checks the folder again against the `HANDOFF_DIR` of your own shell profile, so a folder
+  that only an agent set in its environment is refused. An agent that may write into your
+  handover folder can still write a handover file - that is what the skill does.
 - **Remote mode never trusts a repository for you.** If Claude Code asks whether to trust
   a freshly cloned repository on the server, the skill stops and lets you decide: trusting
   it lets the repository's hooks and MCP settings run code. It validates host, repository,

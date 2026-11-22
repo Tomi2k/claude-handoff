@@ -22,7 +22,9 @@
 #          environment of the agent running this launcher has no effect.
 #
 # The handover file must be the user's own regular file directly in the handover folder
-# (absolute path, no symlink, mode 600 or stricter, name [A-Za-z0-9._-]+.md).
+# (real absolute path, no symlink, mode 600 or stricter, name [A-Za-z0-9._-]+.md, at most
+# 24 hours old; folder mode 700). The start script checks the folder again in the new tab
+# against the user's own HANDOFF_DIR.
 #
 # Name: Claude Code gets it with --name at start. Codex, agy and Grok get the iTerm2 tab
 # title (tabtitle.py). The tab opens in the window of YOUR session (found by its tty);
@@ -56,7 +58,7 @@ NAME=$(python3 -I -c 'import re,sys; s=re.sub(r"[^\w .,+:–—-]", "", sys.argv
 # handover folder is accepted: never a symlink, a file of another user, a file that others
 # can read or write, or a file somewhere in a project.
 python3 -I -c '
-import os, re, stat, sys
+import os, re, stat, sys, time
 ho, d = sys.argv[1], os.path.expanduser(sys.argv[2])
 def bad(msg):
     sys.stderr.write("ERROR: handover file: " + msg + "\n")
@@ -75,8 +77,15 @@ if st.st_mode & 0o077:
     bad("others can read or write it - run chmod 600 on it: " + ho)
 if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*\.md", os.path.basename(ho)):
     bad("unexpected file name (letters, digits, . _ - and the ending .md)")
-if os.path.realpath(os.path.dirname(ho)) != os.path.realpath(d):
+if ho != os.path.realpath(ho):
+    bad("pass the real path (no symlink and no .. in any folder of the path)")
+if os.path.dirname(ho) != os.path.realpath(d):
     bad("must be directly in the handover folder " + d)
+ds = os.lstat(os.path.dirname(ho))
+if not stat.S_ISDIR(ds.st_mode) or ds.st_uid != os.getuid() or ds.st_mode & 0o077:
+    bad("the handover folder must be your own folder with mode 700")
+if time.time() - st.st_mtime > 86400:
+    bad("older than 24 hours - write a new handover file for this handoff")
 ' "$HO" "${HANDOFF_DIR:-$HOME/.claude/handoffs}" || exit 2
 
 PROMPT="Read $HO completely first. Do not reopen decisions that are already made. Follow the Mode section exactly. In CONTINUE mode, first check that the open assigned work is really still open. If it is, continue ONLY that work until its Done-when criterion is met, then report and stop. If it is already done, behave as in CONFIRM mode. In CONFIRM mode, or if the Mode section is missing, do NOT start working: summarise goal, context and state in a few sentences, name the first item under Assigned and ask: Do you want me to do <step> next? If Assigned is empty, say: The assignment is done. Then offer the Suggestions as options and wait. Never invent follow-up tasks. Never run Suggestions without approval."
@@ -89,7 +98,7 @@ case "$TO" in
   grok) SKIPFLAG=--always-approve ;;
 esac
 if [ -n "${HANDOFF_MODEL:-}" ]; then
-  if [[ "$HANDOFF_MODEL" =~ ^[A-Za-z0-9._-]{2,40}$ ]]; then ARGS+=(--model "$HANDOFF_MODEL")
+  if [[ "$HANDOFF_MODEL" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{1,39}$ ]]; then ARGS+=(--model "$HANDOFF_MODEL")
   else echo "WARNING: HANDOFF_MODEL ignored (unexpected characters)" >&2; fi
 fi
 [ "$TO" = "claude" ] && [ -n "$NAME" ] && ARGS+=(--name "$NAME")
@@ -103,6 +112,13 @@ TMP=$(mktemp "${TMPDIR:-/tmp}/handoff-launch.XXXXXX") || { echo "ERROR: mktemp f
 {
   echo '#!/usr/bin/env bash'
   echo 'rm -f -- "$0"'
+  # The handover folder is the user's own setting too. The launcher checked the file
+  # against HANDOFF_DIR of ITS environment; the new tab checks the folder again against
+  # the user's profile, so a folder that only an agent set is refused here.
+  echo 'D="${HANDOFF_DIR:-$HOME/.claude/handoffs}"; D="${D/#\~/$HOME}"'
+  printf 'if [ "$(cd -- "$D" 2>/dev/null && pwd -P)" != %q ]; then\n' "$(dirname "$HO")"
+  echo '  echo "Perfect Handoff: the handover file is not in your handover folder ($D). Nothing was started."; exit 1'
+  echo 'fi'
   printf 'cd -- %q || exit 1\n' "$CWD"
   # HANDOFF_SKIP_PERMISSIONS is the user's own setting. It is read here, in the shell of the
   # new tab, which iTerm2 starts from the user's profile - not from the environment of the

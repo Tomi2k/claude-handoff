@@ -185,8 +185,10 @@ HANDOFF_NAME
 
 The launcher keeps only letters, digits, space and `. , _ + : -` of the name.
 It accepts only the handover file you wrote in step 1: an absolute path, a regular file
-(no symlink) of this user directly in the handover folder, mode 600, named
-`[A-Za-z0-9._-]+.md`. Any other file ends with exit 2 - never work around that check.
+(no symlink) of this user directly in the handover folder (mode 700), mode 600, named
+`[A-Za-z0-9._-]+.md`, written in the last 24 hours. Any other file ends with exit 2. The
+new tab checks the folder again against the user's own `HANDOFF_DIR`; if it differs, the
+new session does not start (exit 3). Never work around these checks.
 If your CLI runs commands in a sandbox that blocks iTerm2 automation (AppleScript), run
 these commands with the approval your CLI asks for; never switch the sandbox off yourself.
 
