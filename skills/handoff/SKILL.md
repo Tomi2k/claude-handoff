@@ -246,16 +246,18 @@ Never pass bypass flags on the server; that is the user's decision on the server
    removes the temp file, and `&&` stops at the first failure:
    ```bash
    ssh -- "$HANDOFF_REMOTE_HOST" '! tmux has-session -t handoff-<slug> 2>/dev/null' &&
+   P='Read ~/handoffs/<HANDOVER_FILE> completely first. Do not reopen decisions that are already made. Follow the Mode section exactly. In CONTINUE mode, first check that the open assigned work is really still open. If it is, continue ONLY that work until its Done-when criterion is met, then report and stop. If it is already done, behave as in CONFIRM mode. In CONFIRM mode, or if the Mode section is missing, do NOT start working: summarise goal, context and state in a few sentences, name the first item under Assigned and ask: Do you want me to do <step> next? If Assigned is empty, say: The assignment is done. Then offer the Suggestions as options and wait. Never invent follow-up tasks. Never run Suggestions without approval.' &&
    S=$(mktemp) && trap 'rm -f -- "$S"' EXIT &&
-   { echo 'rm -f -- "$0"'; printf 'cd ~/projects/%q || exit 1\n' '<repo>'; printf 'exec claude %q\n' '<START_PROMPT>'; } > "$S" &&
+   { echo 'rm -f -- "$0"'; printf 'cd ~/projects/%q || exit 1\n' '<repo>'; printf 'exec claude %q\n' "$P"; } > "$S" &&
    chmod 600 '<HANDOVER_PATH>' &&
    scp -p -- '<HANDOVER_PATH>' "$HANDOFF_REMOTE_HOST":handoffs/ &&
    scp -p -- "$S" "$HANDOFF_REMOTE_HOST":handoffs/start-<slug>.sh &&
    ssh -- "$HANDOFF_REMOTE_HOST" 'tmux new-session -d -s handoff-<slug> bash ~/handoffs/start-<slug>.sh'
    ```
    If it fails, stop and report; never retry with hand-made quoting.
-   `<START_PROMPT>` is the prompt from `handoff_launch.sh` (it contains no single quote),
-   with the remote handover path, inside single quotes.
+   Copy the `P=` line as it is and replace only `<HANDOVER_FILE>`: the file name of
+   `<HANDOVER_PATH>` without folders, which must match `^[A-Za-z0-9][A-Za-z0-9._-]*\.md$`.
+   Never put other text into that line; the prompt contains no quote character.
 4. **Follow-up:** wait ~25 s, then get a status only - never the screen text, which can
    contain secrets or instructions from the repository:
    `ssh -- "$HANDOFF_REMOTE_HOST" 'tmux has-session -t handoff-<slug> 2>/dev/null || { echo not_running; exit 0; }; tmux capture-pane -t handoff-<slug> -p | grep -q -i -E "trust this|you trust|trust the files" && echo needs_user || echo running'`.
