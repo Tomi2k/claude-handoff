@@ -14,13 +14,16 @@
 #   then the replaced file is kept as SKILL.md.bak-<date>.
 #   Symlinked destinations are never written.
 #   --iterm2 also creates ~/.local/share/perfect-handoff/venv with the iterm2 Python module
-#   (pinned version, from PyPI) for auto-close and tab titles.
+#   for auto-close and tab titles. The module and its dependencies come from PyPI in the
+#   exact versions of requirements-iterm2.txt, and pip checks every download against the
+#   SHA-256 hashes in that file.
 #   --uninstall removes only unchanged files from the manifest, plus scripts, hooks and venv.
 set -euo pipefail
-SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/skills/handoff"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SRC="$ROOT/skills/handoff"
+REQ="$ROOT/requirements-iterm2.txt"
 DEST="$HOME/.local/share/perfect-handoff"
 MANIFEST="$DEST/manifest.txt"
-ITERM2_VERSION="2.22"
 MODE=install; FORCE=0; WITH_ITERM2=0
 for a in "$@"; do
   case "$a" in
@@ -31,6 +34,8 @@ for a in "$@"; do
   esac
 done
 [ -f "$SRC/SKILL.md" ] || { echo "ERROR: run this from the perfect-handoff folder" >&2; exit 2; }
+# The install folder is created, replaced and removed by this script: never through a symlink.
+if [ -L "$DEST" ]; then echo "ERROR: $DEST is a symlink - remove it first" >&2; exit 2; fi
 
 sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
 ours() { [ -f "$MANIFEST" ] && grep -Fxq "$(sha "$1")  $1" "$MANIFEST"; }   # unchanged file we installed
@@ -90,11 +95,15 @@ mv "$NEW_MANIFEST" "$MANIFEST"
 chmod 600 "$MANIFEST"
 
 if [ "$WITH_ITERM2" = "1" ]; then
-  if python3 -m venv "$DEST/venv" && "$DEST/venv/bin/pip" install -q "iterm2==$ITERM2_VERSION" \
+  [ -f "$REQ" ] || { echo "ERROR: $REQ is missing" >&2; exit 1; }
+  # -I: no module from the current folder or PYTHONPATH is imported while the venv is
+  # built. --require-hashes: pip installs only files whose SHA-256 is listed in $REQ.
+  if python3 -I -m venv "$DEST/venv" \
+      && "$DEST/venv/bin/python" -I -m pip install -q --disable-pip-version-check --require-hashes -r "$REQ" \
       && "$DEST/venv/bin/python" -I -c "import iterm2"; then
-    echo "iterm2   $DEST/venv (iterm2 $ITERM2_VERSION)"
+    echo "iterm2   $DEST/venv ($(grep -m1 -o '^iterm2==[0-9.]*' "$REQ"), hashes checked)"
   else
-    echo "ERROR: could not set up $DEST/venv with iterm2 $ITERM2_VERSION" >&2; exit 1
+    echo "ERROR: could not set up $DEST/venv from $REQ" >&2; exit 1
   fi
 fi
 

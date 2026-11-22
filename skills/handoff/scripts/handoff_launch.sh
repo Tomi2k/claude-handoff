@@ -14,9 +14,15 @@
 #        2 = bad arguments
 #        3 = the new session did NOT start - do not close the old session
 # env:   HANDOFF_MODEL=<name>        optional model for the new session
+#        HANDOFF_DIR=<dir>           handover folder (default ~/.claude/handoffs)
 #        HANDOFF_SKIP_PERMISSIONS=1  start without permission prompts (opt-in, user only):
 #          claude/agy --dangerously-skip-permissions, codex --dangerously-bypass-approvals-and-sandbox,
-#          grok --always-approve
+#          grok --always-approve. This one is NOT read here: the start script reads it in the
+#          shell of the new tab (the user's own profile). A value that exists only in the
+#          environment of the agent running this launcher has no effect.
+#
+# The handover file must be the user's own regular file directly in the handover folder
+# (absolute path, no symlink, mode 600 or stricter, name [A-Za-z0-9._-]+.md).
 #
 # Name: Claude Code gets it with --name at start. Codex, agy and Grok get the iTerm2 tab
 # title (tabtitle.py). The tab opens in the window of YOUR session (found by its tty);
@@ -46,18 +52,42 @@ case "$NAME" in *[[:cntrl:]]*) echo "ERROR: session name contains control charac
 NAME=$(python3 -I -c 'import re,sys; s=re.sub(r"[^\w .,+:–—-]", "", sys.argv[1]); print(s.lstrip("-. ").strip()[:80])' "$NAME") \
   || { echo "ERROR: python3 is needed to check the session name" >&2; exit 2; }
 [ -d "$CWD" ] || { echo "ERROR: project dir not found: $CWD" >&2; exit 2; }
-[ -f "$HO" ]  || { echo "ERROR: handover file not found: $HO" >&2; exit 2; }
+# The new session is told to follow this file, so only the user's own handover file in the
+# handover folder is accepted: never a symlink, a file of another user, a file that others
+# can read or write, or a file somewhere in a project.
+python3 -I -c '
+import os, re, stat, sys
+ho, d = sys.argv[1], os.path.expanduser(sys.argv[2])
+def bad(msg):
+    sys.stderr.write("ERROR: handover file: " + msg + "\n")
+    sys.exit(1)
+if not os.path.isabs(ho) or re.search(r"[\x00-\x1f\x7f]", ho):
+    bad("pass an absolute path without control characters")
+try:
+    st = os.lstat(ho)
+except OSError:
+    bad("not found: " + ho)
+if not stat.S_ISREG(st.st_mode):
+    bad("not a regular file (symlinks are not followed): " + ho)
+if st.st_uid != os.getuid():
+    bad("not owned by you: " + ho)
+if st.st_mode & 0o077:
+    bad("others can read or write it - run chmod 600 on it: " + ho)
+if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*\.md", os.path.basename(ho)):
+    bad("unexpected file name (letters, digits, . _ - and the ending .md)")
+if os.path.realpath(os.path.dirname(ho)) != os.path.realpath(d):
+    bad("must be directly in the handover folder " + d)
+' "$HO" "${HANDOFF_DIR:-$HOME/.claude/handoffs}" || exit 2
 
 PROMPT="Read $HO completely first. Do not reopen decisions that are already made. Follow the Mode section exactly. In CONTINUE mode, first check that the open assigned work is really still open. If it is, continue ONLY that work until its Done-when criterion is met, then report and stop. If it is already done, behave as in CONFIRM mode. In CONFIRM mode, or if the Mode section is missing, do NOT start working: summarise goal, context and state in a few sentences, name the first item under Assigned and ask: Do you want me to do <step> next? If Assigned is empty, say: The assignment is done. Then offer the Suggestions as options and wait. Never invent follow-up tasks. Never run Suggestions without approval."
 
 ARGS=()
-if [ "${HANDOFF_SKIP_PERMISSIONS:-0}" = "1" ]; then
-  case "$TO" in
-    claude|agy) ARGS+=(--dangerously-skip-permissions) ;;
-    codex) ARGS+=(--dangerously-bypass-approvals-and-sandbox) ;;
-    grok) ARGS+=(--always-approve) ;;
-  esac
-fi
+# The bypass flag of the target CLI. Whether it is used is decided in the new tab (below).
+case "$TO" in
+  claude|agy) SKIPFLAG=--dangerously-skip-permissions ;;
+  codex) SKIPFLAG=--dangerously-bypass-approvals-and-sandbox ;;
+  grok) SKIPFLAG=--always-approve ;;
+esac
 if [ -n "${HANDOFF_MODEL:-}" ]; then
   if [[ "$HANDOFF_MODEL" =~ ^[A-Za-z0-9._-]{2,40}$ ]]; then ARGS+=(--model "$HANDOFF_MODEL")
   else echo "WARNING: HANDOFF_MODEL ignored (unexpected characters)" >&2; fi
@@ -74,7 +104,11 @@ TMP=$(mktemp "${TMPDIR:-/tmp}/handoff-launch.XXXXXX") || { echo "ERROR: mktemp f
   echo '#!/usr/bin/env bash'
   echo 'rm -f -- "$0"'
   printf 'cd -- %q || exit 1\n' "$CWD"
-  printf 'exec %q' "$TO"
+  # HANDOFF_SKIP_PERMISSIONS is the user's own setting. It is read here, in the shell of the
+  # new tab, which iTerm2 starts from the user's profile - not from the environment of the
+  # agent that runs this launcher, where an agent could put it in front of the command.
+  printf 'S=(); [ "${HANDOFF_SKIP_PERMISSIONS:-0}" = "1" ] && S=(%q)\n' "$SKIPFLAG"
+  printf 'exec %q ${S[@]+"${S[@]}"}' "$TO"
   for a in ${ARGS[@]+"${ARGS[@]}"}; do printf ' %q' "$a"; done
   printf ' %q\n' "$PROMPT"
 } > "$TMP"

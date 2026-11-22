@@ -3,14 +3,19 @@
 # Works for Claude Code, Codex, agy and Grok; the CLI is found via the process tree.
 #   claude: every Bash tool shell (also run_in_background and Monitor) is a direct child of
 #           the claude process: "/bin/zsh -c source ~/.claude/shell-snapshots/... eval '<cmd>' ...".
-#   others: every direct child of the CLI that is a shell (zsh, bash, sh, dash, fish) or that
-#           runs in its own terminal (agy starts commands directly in a new pty).
+#   others: every direct child of the CLI that is a shell (zsh, bash, sh, dash, fish), a
+#           sandbox wrapper (sandbox-exec) or that runs in its own terminal (agy starts
+#           commands directly in a new pty).
 # MCP servers (started without a shell), caffeinate and the shell running this check are
 # ignored. Background agents and workflows inside the CLI process are NOT visible here.
+# Limit: another program that a CLI starts directly on its own terminal, without a shell,
+# looks like an MCP server and is not counted.
 #
 # usage: bg_check.sh [SESSION_ID | --pid PID]
 #        no argument: your own CLI; SESSION_ID: a Claude Code session; --pid: that CLI process
-# exit:  0 = no background shell, 1 = at least one is running, 2 = CLI process not found
+# exit:  0 = no background shell, 1 = at least one is running,
+#        2 = unknown: CLI process not found, or its children could not be listed (never
+#            treat 2 as "nothing runs")
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CPID=""; CLI=""
@@ -72,7 +77,8 @@ rules = [
     (r"(?<![A-Za-z0-9])(sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9]{10,}|github_pat_\w{10,}"
      r"|xox[abprs]-[A-Za-z0-9-]{8,}|glpat-[\w-]{10,}|AKIA[0-9A-Z]{16}|AIza[\w-]{20,})", "***"),
     (r"((?:Bearer|Basic|Token)\s+)[^\s\"\x27]+", r"\1***"),
-    (r"((?:-H|--header)[=\s]*)(\"[^\"]*\"|\x27[^\x27]*\x27|\S+)", r"\1***"),
+    (r"((?:-H|--header)[=\s]*)(\"[^\"]*\"|\x27[^\x27]*\x27|[^\s:]+:\s*\S+|\S+)", r"\1***"),
+    (r"(--cookie(?:-jar)?[=\s]+)(\"[^\"]*\"|\x27[^\x27]*\x27|\S+)", r"\1***"),
     (r"((?:set-)?cookie\s*[:=]\s*)[^\"\x27]+", r"\1***"),
     (r"(-b\s+)(\"[^\"]*\"|\x27[^\x27]*\x27|\S+)", r"\1***"),
     (r"(\"[\w-]*(?:token|key|secret|passw(?:or)?d|auth)[\w-]*\"\s*:\s*)\"[^\"]*\"", r"\1***"),
@@ -89,7 +95,14 @@ print(s[:160])'
 }
 
 N=0
-for c in $(pgrep -P "$CPID"); do
+# pgrep: 0 = children found, 1 = none. Anything else is a failed listing, and a failed
+# listing must never read as "nothing runs".
+KIDS=$(pgrep -P "$CPID"); RC=$?
+if [ "$RC" -gt 1 ]; then
+  echo "ERROR: could not list the child processes of $CLI pid $CPID (pgrep exit $RC)." >&2
+  exit 2
+fi
+for c in $KIDS; do
   case "$ANC" in *" $c "*) continue ;; esac          # our own call chain
   cmd=$(ps -ww -o command= -p "$c" 2>/dev/null) || continue
   inner=""
@@ -100,15 +113,20 @@ for c in $(pgrep -P "$CPID"); do
           | sed -e "s/'\"'\"'/'/g" -e "s/'\\\\''/'/g") ;;
       *) # a shell in an unknown layout (a Claude Code update?) counts as running work
         cn=$(ps -o comm= -p "$c" 2>/dev/null); cn="${cn##*/}"; cn="${cn#-}"
-        case "$cn" in zsh|bash|sh|dash|fish) inner="(shell, unknown layout) $(desc "$c" | head -1)" ;; *) continue ;; esac ;;
+        case "$cn" in
+          zsh|bash|sh|dash|fish) inner="(shell, unknown layout) $(desc "$c" | head -1)" ;;
+          sandbox-exec) inner="(sandboxed command) $(desc "$c" | head -1)" ;;
+          *) continue ;;
+        esac ;;
     esac
   else
-    # A tool process is a shell, or runs in its own terminal (agy starts commands directly
+    # A tool process is a shell, a sandbox wrapper (Codex runs commands through
+    # sandbox-exec on macOS), or runs in its own terminal (agy starts commands directly
     # in a new pty). MCP servers share the CLI's terminal and are not shells: they never count.
     cn=$(ps -o comm= -p "$c" 2>/dev/null); cn="${cn##*/}"; cn="${cn#-}"
     ct=$(ps -o tty= -p "$c" 2>/dev/null | tr -d ' ')
     case "$cn" in
-      zsh|bash|sh|dash|fish) ;;
+      zsh|bash|sh|dash|fish|sandbox-exec) ;;
       *) if [ -z "$ct" ] || [ "$ct" = "??" ] || [ "$ct" = "$CTTY" ]; then continue; fi ;;
     esac
     inner=$(desc "$c" | head -1)   # the first non-shell process below it, e.g. "sleep 240"

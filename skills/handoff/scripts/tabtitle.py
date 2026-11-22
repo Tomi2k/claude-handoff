@@ -11,7 +11,7 @@ usage: tabtitle.py set <tty> <title>
 exit:  0 = done, 1 = no iTerm2 tab with that tty / iterm2 module or Python API missing,
        2 = bad arguments
 Needs the iterm2 Python module and iTerm2's Python API (Settings > General > Magic).
-Without the module in this Python, it restarts itself with $HANDOFF_ITERM2_PYTHON or
+Without the module in this Python, it restarts itself with the Python of
 ~/.local/share/perfect-handoff/venv (created by install.sh --iterm2).
 """
 import os

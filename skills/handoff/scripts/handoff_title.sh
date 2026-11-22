@@ -41,7 +41,7 @@ case "${1:-}" in
     for f in "$HOME"/.claude/sessions/*.json; do
       [ -e "$f" ] || continue
       jq -r --arg sid "$own" \
-        'select(.sessionId == $sid and .name != null) | "\(.name)|\(.sessionId)"' "$f" 2>/dev/null
+        'select(.sessionId == $sid and .name != null) | "\(.name)|\(.sessionId)"' "$f" 2>/dev/null || true
     done | head -1
     ;;
   next)
