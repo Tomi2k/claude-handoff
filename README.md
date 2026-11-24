@@ -284,7 +284,8 @@ I audited both the skill and the scripts before publishing. What you should know
   that only an agent set in its environment is refused. **A file alone never starts work
   unseen:** if the file is not exactly in CONFIRM mode, the new tab shows its Mode section
   and waits for your Enter. Only `export HANDOFF_AUTO=1` in your own shell profile switches
-  that question off. Remote mode uses the same file check and always starts in CONFIRM
+  that question off. Without your Enter the new session gets a start prompt that allows no
+  work at all, whatever the file says. Remote mode uses the same file check and always starts in CONFIRM
   mode: you start the work after attaching. An agent that may write into your handover
   folder can still write a handover file - that is what the skill does.
 - **Remote mode never trusts a repository for you.** If Claude Code asks whether to trust

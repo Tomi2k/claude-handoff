@@ -81,7 +81,7 @@ rules = [
     (r"((?:Bearer|Basic|Token)\s+)[^\s\"\x27]+", r"\1***"),
     # ps shows no quotes, so a header, cookie or user value can be several words long:
     # everything up to the next option (or the end) is masked.
-    (r"((?<![\w-])(?:-H|--header|--cookie(?:-jar)?|-b|-u|--user|-a)(?:=|\s+))(.*?)(?=\s+--?[A-Za-z]|$)", r"\1***"),
+    (r"((?<![\w-])(?:-H|--header|--cookie(?:-jar)?|-b|-u|--user|-a)(?:=|\s+|(?=[\"\x27])|(?=\S*[=:])))(.*?)(?=\s+--?[A-Za-z]|$)", r"\1***"),
     (r"((?:set-)?cookie\s*[:=]\s*)[^\"\x27]+", r"\1***"),
     (r"(\"[\w-]*(?:token|key|secret|passw(?:or)?d|auth)[\w-]*\"\s*:\s*)\"[^\"]*\"", r"\1***"),
     (r"(--?(?:token|password|passwd|pass|secret|key|api-key|apikey|auth|user)[=\s]+)"

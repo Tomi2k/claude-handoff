@@ -50,7 +50,7 @@ except ImportError:
     sys.exit(1)
 
 SESS_DIR = os.path.expanduser("~/.claude/sessions")
-LOG_DIR = os.path.expanduser(os.environ.get("HANDOFF_DIR", "~/.claude/handoffs"))
+LOG_DIR = os.path.expanduser(os.environ.get("HANDOFF_DIR") or "~/.claude/handoffs")
 BG_CHECK = os.path.join(HERE, "bg_check.sh")
 IDLE_TIMEOUT = 900  # s: longest wait for the final message to finish
 QUIET = 6           # s: screen without change = turn is over (CLIs without a registry)
@@ -91,6 +91,8 @@ def alive(pid):
 def log(name, msg):
     """Append to the private log. Never follows a symlink (folder or file), skips a folder
     of another user and never changes the mode of a folder that exists already."""
+    if not os.path.isabs(LOG_DIR):   # never a folder relative to the project
+        return
     try:
         os.makedirs(LOG_DIR, mode=0o700, exist_ok=True)
         st = os.lstat(LOG_DIR)

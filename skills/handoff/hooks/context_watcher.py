@@ -37,11 +37,13 @@ STEP = 0.10            # re-notify only after another 10 points
 FINISH_BUDGET = 0.10   # share of the window allowed to finish a running step
 HARD_LIMIT = 0.85      # from here on: no finishing, only a clean stop
 
-CONFIG_DIR = os.environ.get("CLAUDE_CONFIG_DIR", os.path.expanduser("~/.claude"))
+CONFIG_DIR = os.path.expanduser(os.environ.get("CLAUDE_CONFIG_DIR") or "~/.claude")
+if not os.path.isabs(CONFIG_DIR):
+    CONFIG_DIR = os.path.expanduser("~/.claude")
 CODEX_HOME = os.path.expanduser(os.environ.get("CODEX_HOME", "~/.codex"))
 GROK_HOME = os.path.expanduser(os.environ.get("GROK_HOME", "~/.grok"))
 SID_RE = re.compile(r"[0-9A-Za-z_-]{8,64}")
-STATE_DIR = os.path.expanduser(os.environ.get("HANDOFF_DIR", "~/.claude/handoffs"))
+STATE_DIR = os.path.expanduser(os.environ.get("HANDOFF_DIR") or "~/.claude/handoffs")
 
 
 def window_size():
@@ -187,6 +189,8 @@ def main():
     try:
         inp = json.load(sys.stdin)
     except ValueError:
+        return
+    if not isinstance(inp, dict) or not os.path.isabs(STATE_DIR):
         return
     tp = inp.get("transcript_path")
     sid = str(inp.get("session_id", "unknown"))

@@ -102,7 +102,7 @@ if [ "$WITH_ITERM2" = "1" ]; then
   # -I: no module from the current folder or PYTHONPATH is imported while the venv is
   # built. --require-hashes: pip installs only files whose SHA-256 is listed in $REQ.
   # --only-binary: wheels only, so no build step downloads further (unlisted) packages.
-  if python3 -I -m venv "$DEST/venv" \
+  if python3 -I -m venv --clear "$DEST/venv" \
       && "$DEST/venv/bin/python" -I -m pip install -q --disable-pip-version-check --require-hashes --only-binary :all: -r "$REQ" \
       && "$DEST/venv/bin/python" -I -c "import iterm2"; then
     echo "iterm2   $DEST/venv ($(grep -m1 -o '^iterm2==[0-9.]*' "$REQ"), hashes checked)"

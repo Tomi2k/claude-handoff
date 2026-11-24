@@ -40,6 +40,8 @@ def check(ho, folder):
     ds = os.lstat(os.path.dirname(ho))
     if not stat.S_ISDIR(ds.st_mode) or ds.st_uid != os.getuid() or ds.st_mode & 0o077:
         return "the handover folder must be your own folder with mode 700"
+    if st.st_mtime > time.time() + 60:
+        return "its time stamp is in the future - write a new handover file"
     if time.time() - st.st_mtime > MAX_AGE:
         return "older than 15 minutes - write a new handover file for this handoff"
     return None
@@ -49,7 +51,11 @@ if __name__ == "__main__":
     if len(sys.argv) != 2:
         sys.stderr.write("usage: handoff_check.py <absolute path of the handover file>\n")
         sys.exit(2)
-    why = check(sys.argv[1], os.path.expanduser(os.environ.get("HANDOFF_DIR") or "~/.claude/handoffs"))
+    folder = os.path.expanduser(os.environ.get("HANDOFF_DIR") or "~/.claude/handoffs")
+    if not os.path.isabs(folder):
+        sys.stderr.write("ERROR: HANDOFF_DIR must be an absolute path\n")
+        sys.exit(1)
+    why = check(sys.argv[1], folder)
     if why:
         sys.stderr.write("ERROR: handover file: " + why + "\n")
         sys.exit(1)
