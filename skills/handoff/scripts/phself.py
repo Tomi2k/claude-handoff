@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S python3 -I
 """Which agent CLI runs this script, and in which terminal tab?
 
 Walks up the process tree to the NEAREST claude / codex / agy / grok process. The nearest

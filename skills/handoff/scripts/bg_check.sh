@@ -8,8 +8,9 @@
 #           commands directly in a new pty).
 # MCP servers (started without a shell), caffeinate and the shell running this check are
 # ignored. Background agents and workflows inside the CLI process are NOT visible here.
-# Limit: another program that a CLI starts directly on its own terminal, without a shell,
-# looks like an MCP server and is not counted.
+# A process on the terminal of the CLI whose parent has ended (parent pid 1) counts too.
+# Limit: a program that Codex, agy or Grok starts directly on the terminal of the CLI,
+# without a shell, looks like an MCP server and is not counted.
 #
 # usage: bg_check.sh [SESSION_ID | --pid PID]
 #        no argument: your own CLI; SESSION_ID: a Claude Code session; --pid: that CLI process
@@ -66,8 +67,9 @@ desc() {
 }
 
 # Mask secrets before the command line reaches the model: URL credentials, known token
-# prefixes, Bearer/Basic values, JSON keys, --token/--password/--user values (also quoted),
-# -u user:pass, -p values and KEY=/TOKEN= assignments. Over-masking is accepted.
+# prefixes, Bearer/Basic values, JSON keys, --token/--password values (also quoted), the
+# whole value after -H, --header, --cookie, -b, -u, --user and -a (up to the next option),
+# -p values and KEY=/TOKEN= assignments. Over-masking is accepted.
 redact() {
   python3 -I -c '
 import re, sys
@@ -77,10 +79,10 @@ rules = [
     (r"(?<![A-Za-z0-9])(sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9]{10,}|github_pat_\w{10,}"
      r"|xox[abprs]-[A-Za-z0-9-]{8,}|glpat-[\w-]{10,}|AKIA[0-9A-Z]{16}|AIza[\w-]{20,})", "***"),
     (r"((?:Bearer|Basic|Token)\s+)[^\s\"\x27]+", r"\1***"),
-    (r"((?:-H|--header)[=\s]*)(\"[^\"]*\"|\x27[^\x27]*\x27|[^\s:]+:\s*\S+|\S+)", r"\1***"),
-    (r"(--cookie(?:-jar)?[=\s]+)(\"[^\"]*\"|\x27[^\x27]*\x27|\S+)", r"\1***"),
+    # ps shows no quotes, so a header, cookie or user value can be several words long:
+    # everything up to the next option (or the end) is masked.
+    (r"((?<![\w-])(?:-H|--header|--cookie(?:-jar)?|-b|-u|--user|-a)(?:=|\s+))(.*?)(?=\s+--?[A-Za-z]|$)", r"\1***"),
     (r"((?:set-)?cookie\s*[:=]\s*)[^\"\x27]+", r"\1***"),
-    (r"(-b\s+)(\"[^\"]*\"|\x27[^\x27]*\x27|\S+)", r"\1***"),
     (r"(\"[\w-]*(?:token|key|secret|passw(?:or)?d|auth)[\w-]*\"\s*:\s*)\"[^\"]*\"", r"\1***"),
     (r"(--?(?:token|password|passwd|pass|secret|key|api-key|apikey|auth|user)[=\s]+)"
      r"(\"[^\"]*\"|\x27[^\x27]*\x27|\S+)", r"\1***"),
@@ -141,6 +143,20 @@ for c in $KIDS; do
   shown=$(printf '%s' "$inner" | redact)
   printf 'RUNNING  pid %-6s for %-9s %s\n' "$c" "$et" "$shown"
 done
+
+# Detached work: a process on the terminal of the CLI whose parent has ended (parent pid 1),
+# for example a command started with "nohup ... &". It dies when the tab closes.
+if [ -n "$CTTY" ] && [ "$CTTY" != "??" ]; then
+  for c in $(ps -t "$CTTY" -o pid=,ppid= 2>/dev/null | awk '$2 == 1 {print $1}'); do
+    [ "$c" = "$CPID" ] && continue
+    case "$ANC" in *" $c "*) continue ;; esac
+    cmd=$(ps -ww -o command= -p "$c" 2>/dev/null) || continue
+    [ -n "$cmd" ] || continue
+    et=$(ps -o etime= -p "$c" | tr -d ' ')
+    N=$((N + 1))
+    printf 'RUNNING  pid %-6s for %-9s (detached) %s\n' "$c" "$et" "$(printf '%s' "$cmd" | redact)"
+  done
+fi
 
 if [ "$N" -eq 0 ]; then
   echo "NO background shell running ($CLI pid $CPID)."

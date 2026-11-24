@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S python3 -I
 """Handoff wrap-up: closes the iTerm2 tab of your own agent session by itself - but only
 when every check passes. On any doubt the tab stays open and the user closes it.
 
@@ -11,9 +11,11 @@ Without --run it checks that the tab can be found and then restarts itself detac
   claude  the session registry says "idle" (~/.claude/sessions/*.json)
   others  the screen stops changing for QUIET seconds and shows no busy hint
 It aborts WITHOUT closing
-  - if no input box is recognised, or the input box is not empty (a draft is never lost),
-  - if, during the DELAY seconds that follow (checked every second), the input box changes,
-    the session becomes active again (claude: registry; others: screen or busy hint), or
+  - if no input box is recognised, the input box is not empty, or the terminal cursor is
+    not directly behind the prompt glyph (so a draft of spaces or empty lines also counts),
+  - if, during the DELAY seconds that follow (checked every second), the input box or the
+    cursor changes, the session becomes active again (claude: registry or busy hint;
+    others: any change on the screen or a busy hint), or
   - if bg_check.sh does not report "no background shell", or
   - if the CLI is no longer in the foreground of that exact iTerm2 session.
 Otherwise it closes only that tab (async_close with force).
@@ -31,6 +33,7 @@ import glob
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import time
@@ -54,12 +57,14 @@ QUIET = 6           # s: screen without change = turn is over (CLIs without a re
 RULE = re.compile(r"\s*[╭┌]?[─━]{20,}")  # line above an input box
 # Hints that the CLIs show only while a turn runs (lower case, bottom of the screen).
 BUSY = ("esc to interrupt", "esc to cancel", "ctrl+c:cancel", "generating...", "generating…")
-# Grey hint texts that some CLIs show in an EMPTY input box.
-PLACEHOLDERS = (
-    re.compile(r".*\(shift\+tab to cycle\)$"),        # agy
-    re.compile(r'Try ".*"$'),                           # Claude Code tips
-    re.compile(r"(Ask Codex to do anything|Ask a follow-up question)$"),  # Codex
-)
+# Grey hint texts that a CLI shows in an EMPTY input box. Exact texts only: a pattern that
+# also matches typed text would throw a draft away. An unknown hint keeps the tab open.
+PLACEHOLDERS = {
+    "claude": (re.compile(r'Try "[^"]*"'),),
+    "codex": (re.compile(r"Ask Codex to do anything|Ask a follow-up question"),),
+    "agy": (),
+    "grok": (),
+}
 
 
 def entry(sid):
@@ -84,12 +89,13 @@ def alive(pid):
 
 
 def log(name, msg):
-    """Append to the private log. Never follows a symlink; skips a folder of another user."""
+    """Append to the private log. Never follows a symlink (folder or file), skips a folder
+    of another user and never changes the mode of a folder that exists already."""
     try:
         os.makedirs(LOG_DIR, mode=0o700, exist_ok=True)
-        if os.stat(LOG_DIR).st_uid != os.getuid():
+        st = os.lstat(LOG_DIR)
+        if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid():
             return
-        os.chmod(LOG_DIR, 0o700)
         fd = os.open(os.path.join(LOG_DIR, f".autoclose-{name}.log"),
                      os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
     except OSError:
@@ -122,43 +128,63 @@ async def find_session(conn, tty):
     return None
 
 
-async def screen_lines(s):
+async def screen(s):
+    """The visible screen as text lines, and the cursor as (row on the screen, column)."""
     c = await s.async_get_screen_contents()
-    return [c.line(i).string for i in range(c.number_of_lines)]
+    li = await s.async_get_line_info()
+    lines = [c.line(i).string.replace("\x00", " ").replace("\xa0", " ")
+             for i in range(c.number_of_lines)]
+    row = c.cursor_coord.y - li.overflow - li.scrollback_buffer_height
+    return lines, (row, c.cursor_coord.x)
 
 
-def input_box(lines):
-    """The input box: the lowest line that starts with a prompt glyph (❯ or > right below a
-    box rule, also inside a box "│ ❯ ... │"; or Codex's ›), plus every line below it up to
-    the next rule. Returns its text after the glyph, or None if no box is recognised."""
-    while lines and not lines[-1].strip():
-        lines = lines[:-1]
-    for i in range(len(lines) - 1, max(-1, len(lines) - 31), -1):
+def input_box(lines, cli):
+    """The input box: the lowest line that starts with the prompt glyph of this CLI. Codex
+    shows a bare "›"; the others show "❯" or ">" right below a box rule (also inside a box
+    "│ ❯ ... │"). Returns (text after the glyph, row, column behind "glyph + space"), or
+    None if no box is recognised. Below a rule-framed box every line up to the closing rule
+    belongs to the box, also behind an empty line. Codex has no closing rule: its box ends
+    at the first empty line, and the cursor check covers what follows."""
+    n = len(lines)
+    while n and not lines[n - 1].strip():
+        n -= 1
+    for i in range(n - 1, max(-1, n - 31), -1):
         t = lines[i].strip().strip("│|").strip()
         glyph, above = t[:1], (lines[i - 1] if i > 0 else "")
-        if (glyph in ("❯", ">") and RULE.match(above)) or glyph == "›":
-            box = [t[1:].strip()]
-            for more in lines[i + 1:]:
-                m = more.strip().strip("│|").strip()
-                if RULE.match(more) or more.strip()[:1] in ("╰", "└") or not m:
-                    break
-                box.append(m)
-            return "\n".join(box)
+        if cli == "codex":
+            ok = glyph == "›" and lines[i].startswith("›")
+        else:
+            ok = glyph in ("❯", ">") and bool(RULE.match(above))
+        if not ok:
+            continue
+        box, closed = [t[1:].strip()], cli == "codex"
+        for more in lines[i + 1:n]:
+            m = more.strip().strip("│|").strip()
+            if RULE.match(more) or more.strip()[:1] in ("╰", "└"):
+                closed = True
+                break
+            if not m and cli == "codex":
+                break
+            box.append(m)
+        if not closed:
+            return None     # no closing rule below the prompt: not a box we know
+        return "\n".join(box).rstrip("\n"), i, lines[i].index(glyph) + 2
     return None
 
 
-def is_empty(text):
-    t = (text or "").replace(" ", " ").strip()
-    return t == "" or any(p.fullmatch(t) for p in PLACEHOLDERS)
+def is_empty(box, cursor, cli):
+    """Empty = no text (or exactly a known hint text) AND the cursor right behind the glyph.
+    Typed spaces or line breaks move the cursor, so they count as a draft."""
+    text, row, col = box
+    if cursor != (row, col):
+        return False
+    t = text.strip()
+    return t == "" or any(p.fullmatch(t) for p in PLACEHOLDERS[cli])
 
 
 def busy(lines):
     text = "\n".join(lines[-12:]).lower()
     return any(b in text for b in BUSY)
-
-
-def normalized(lines):
-    return re.sub(r"\d", "0", "\n".join(lines))
 
 
 async def wait_quiet(s, pid):
@@ -167,8 +193,8 @@ async def wait_quiet(s, pid):
     while time.time() - t0 < IDLE_TIMEOUT:
         if not alive(pid):
             return "session already ended"
-        lines = await screen_lines(s)
-        snap = normalized(lines)
+        lines, _ = await screen(s)
+        snap = "\n".join(lines)
         if snap != last or busy(lines):
             last, since = snap, time.time()
         elif time.time() - since >= QUIET:
@@ -209,26 +235,32 @@ def run_close(cli, pid, tty, sid, iterm_id, delay):
                 result["why"] = reason
                 return
         before = stamp(entry(sid) or {}) if cli == "claude" else None
-        lines = await screen_lines(s)
-        box, screen = input_box(lines), normalized(lines)
+        lines, cursor = await screen(s)
+        box, first = input_box(lines, cli), "\n".join(lines)
         if box is None:
             result["why"] = "abort: no input box recognised - close by hand"
             return
-        if not is_empty(box):
+        if not is_empty(box, cursor, cli):
             result["why"] = "abort: the input box is not empty (a draft stays)"
+            return
+        if busy(lines):
+            result["why"] = "abort: the screen shows a busy hint"
             return
         for _ in range(delay):          # watch every second, not only at the end
             await asyncio.sleep(1)
-            lines = await screen_lines(s)
-            if input_box(lines) != box:
+            lines, cur2 = await screen(s)
+            if input_box(lines, cli) != box or cur2 != cursor:
                 result["why"] = "abort: the input box changed (the user typed something)"
+                return
+            if busy(lines):
+                result["why"] = "abort: session became active again"
                 return
             if cli == "claude":
                 e2 = entry(sid)
                 if not e2 or e2.get("status") != "idle" or stamp(e2) != before:
                     result["why"] = "abort: session became active again"
                     return
-            elif busy(lines) or normalized(lines) != screen:
+            elif "\n".join(lines) != first:
                 result["why"] = "abort: session became active again"
                 return
         bg = subprocess.run([BG_CHECK, "--pid", str(pid)], capture_output=True, text=True)
@@ -260,9 +292,14 @@ def main():
             cli, pid, tty, sid, iterm_id = args[i + 1], int(args[i + 2]), args[i + 3], args[i + 4], args[i + 5]
         except (IndexError, ValueError):
             sys.exit(2)
+        sid = None if sid == "-" else sid
         if cli not in phself.SESSION_VARS or not in_foreground(pid, cli, tty):
             sys.exit(2)
-        run_close(cli, pid, tty, None if sid == "-" else sid, iterm_id, delay)
+        if cli == "claude":   # the registry entry of that session id must be this very process
+            e = entry(sid) if sid else None
+            if not e or e.get("pid") != pid:
+                sys.exit(2)
+        run_close(cli, pid, tty, sid, iterm_id, delay)
         return
 
     me = phself.find()

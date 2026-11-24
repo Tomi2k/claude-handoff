@@ -35,7 +35,9 @@ for a in "$@"; do
 done
 [ -f "$SRC/SKILL.md" ] || { echo "ERROR: run this from the perfect-handoff folder" >&2; exit 2; }
 # The install folder is created, replaced and removed by this script: never through a symlink.
-if [ -L "$DEST" ]; then echo "ERROR: $DEST is a symlink - remove it first" >&2; exit 2; fi
+for p in "$DEST" "$DEST/scripts" "$DEST/hooks" "$DEST/venv" "$MANIFEST"; do
+  if [ -L "$p" ]; then echo "ERROR: $p is a symlink - remove it first" >&2; exit 2; fi
+done
 
 sha() { shasum -a 256 "$1" | cut -d' ' -f1; }
 ours() { [ -f "$MANIFEST" ] && grep -Fxq "$(sha "$1")  $1" "$MANIFEST"; }   # unchanged file we installed
@@ -50,6 +52,7 @@ if [ "$MODE" = "uninstall" ]; then
   if [ -f "$MANIFEST" ]; then
     while IFS= read -r line; do
       f="${line#*  }"
+      if [ -L "$f" ] || [ -L "$(dirname "$f")" ]; then echo "kept     $f (symlink)"; continue; fi
       [ -f "$f" ] || continue
       if ours "$f"; then rm -f -- "$f"; rmdir -- "$(dirname "$f")" 2>/dev/null || true; echo "removed  $f"
       else echo "kept     $f (changed since install)"; fi
@@ -98,8 +101,9 @@ if [ "$WITH_ITERM2" = "1" ]; then
   [ -f "$REQ" ] || { echo "ERROR: $REQ is missing" >&2; exit 1; }
   # -I: no module from the current folder or PYTHONPATH is imported while the venv is
   # built. --require-hashes: pip installs only files whose SHA-256 is listed in $REQ.
+  # --only-binary: wheels only, so no build step downloads further (unlisted) packages.
   if python3 -I -m venv "$DEST/venv" \
-      && "$DEST/venv/bin/python" -I -m pip install -q --disable-pip-version-check --require-hashes -r "$REQ" \
+      && "$DEST/venv/bin/python" -I -m pip install -q --disable-pip-version-check --require-hashes --only-binary :all: -r "$REQ" \
       && "$DEST/venv/bin/python" -I -c "import iterm2"; then
     echo "iterm2   $DEST/venv ($(grep -m1 -o '^iterm2==[0-9.]*' "$REQ"), hashes checked)"
   else

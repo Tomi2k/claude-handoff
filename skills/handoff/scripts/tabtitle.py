@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S python3 -I
 """Read or set the iTerm2 tab title of the tab whose session has a given tty.
 
 This is the session name for CLIs without a usable rename command (Codex, agy, Grok).
@@ -40,7 +40,7 @@ def main():
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
         import phself
         phself.reexec_for_iterm2()
-        print("MANUAL: Python module 'iterm2' is missing (./install.sh --iterm2, or pip install iterm2).")
+        print("MANUAL: Python module 'iterm2' is missing (./install.sh --iterm2).")
         sys.exit(1)
     op, tty = a[0], a[1]
     title = clean(a[2]) if op == "set" else ""

@@ -25,21 +25,31 @@ closes the old tab by itself.
 
 Tested on macOS 26.6 with iTerm2 3.7.9 in November 2026. Real end-to-end runs through
 `/handoff` (old tab closed itself, new session read the handover file): Claude Code → Grok,
-Grok → agy, agy → Claude Code, agy → Grok. Codex is not tested end to end yet.
+Grok → agy, agy → Claude Code, agy → Grok, Claude Code → Codex, Codex → Claude Code. Codex
+has limits as the old session, see below the table.
 
 | | Claude Code | Codex | Antigravity CLI (`agy`) | Grok |
 |---|---|---|---|---|
-| Tested version | 2.1.330 | 0.169.0 | 1.5.14 | 1.0.77 |
+| Tested version | 2.1.330 | 0.171.0 | 1.5.14 | 1.0.77 |
 | Starts the skill | `/handoff` | `$handoff` | `/handoff` | `/handoff` |
-| Opens as the new session and reads the handover | ✓ | not yet tested | ✓ | ✓ |
-| Hands off to another CLI | ✓ (to Grok) | not yet tested | ✓ (to Claude Code, to Grok) | ✓ (to agy) |
-| Carries the name over ("... - Part 2") | ✓ `--name` at start | not yet tested (tab title set ✓) | ✓ tab title | ✓ tab title |
-| Old tab closes itself | ✓ (session registry) | not yet tested | ✓ (screen stops changing) | ✓ (screen stops changing) |
-| Background check | ✓ shells | not yet tested | ✓ own-terminal processes | ✓ shells |
+| Opens as the new session and reads the handover | ✓ | ✓ | ✓ | ✓ |
+| Hands off to another CLI | ✓ (to Grok, to Codex) | ✓ (to Claude Code) | ✓ (to Claude Code, to Grok) | ✓ (to agy) |
+| Carries the name over ("... - Part 2") | ✓ `--name` at start | as the new session: ✓ tab title; as the old session: ✗ | ✓ tab title | ✓ tab title |
+| Old tab closes itself | ✓ (session registry) | ✗ in a real handoff (you close the tab) | ✓ (screen stops changing) | ✓ (screen stops changing) |
+| Background check | ✓ shells | runs; not tested with a running shell | ✓ own-terminal processes | ✓ shells |
 | Context measured | ✓ transcript | session file read from a stored session, not live | ✗ not measurable | ✓ `signals.json` |
 | Context watcher hook | ✓ | - | - | - |
 
-"Not yet tested" means exactly that. This table changes only after a real run.
+"Not tested" means exactly that. This table changes only after a real run.
+
+**Codex as the old session.** Codex 0.171 runs its commands through a background service
+(`codex app-server`) that has no terminal and serves every Codex session. The scripts
+cannot tell which iTerm2 tab belongs to the session. In the real run the handover file was
+written and Claude Code started in a new tab and read it; the name was not carried over,
+and the last line was "You can close this terminal now" instead of the auto-close. The
+background check then looks at the service: it can also list shells of your other Codex
+sessions. The auto-close watcher itself closed an idle Codex tab in a direct test. Codex
+ran without its sandbox in these tests; a handoff from a sandboxed Codex is not tested.
 
 ## Why this exists
 
@@ -201,8 +211,8 @@ agent never to set them itself, except `HANDOFF_MODEL` when you ask for a model 
 | `CLAUDE_CONTEXT_WINDOW` | `200000` (`1000000` if the model has `[1m]`) | Window size used for Claude Code percentages. Codex and Grok report their own window. |
 | `HANDOFF_DIR` | `~/.claude/handoffs` | Where handover files and small state files go. |
 | `HANDOFF_MODEL` | - | Model for the new session (passed as `--model`). |
-| `HANDOFF_SKIP_PERMISSIONS` | `0` | `1` starts the new session without permission prompts: `--dangerously-skip-permissions` (Claude Code, agy), `--dangerously-bypass-approvals-and-sandbox` (Codex), `--always-approve` (Grok). Read in the shell of the new tab: set it in your shell profile (for example `~/.zshrc`). Read *Security* first. |
-| `HANDOFF_AUTO` | `0` | `1` lets the Claude Code watcher start the handoff without asking you first. |
+| `HANDOFF_SKIP_PERMISSIONS` | `0` | `1` starts the new session without permission prompts: `--dangerously-skip-permissions` (Claude Code, agy), `--dangerously-bypass-approvals-and-sandbox` (Codex), `--always-approve` (Grok). Read in the shell of the new tab: put `export HANDOFF_SKIP_PERMISSIONS=1` into your shell profile (for example `~/.zshrc`). Read *Security* first. |
+| `HANDOFF_AUTO` | `0` | `1` lets the Claude Code watcher start the handoff without asking you first, and starts a CONTINUE handover in the new tab without the Enter question. The new tab reads it from your shell profile (`export HANDOFF_AUTO=1`). |
 | `HANDOFF_REMOTE_HOST` | - | SSH alias for remote mode. On the server: `~/handoffs` and `~/projects/<repo>`. |
 
 ## What is in the box
@@ -215,6 +225,7 @@ skills/handoff/
 └── scripts/
     ├── phself.py             which CLI am I, which pid, which terminal, which session
     ├── handoff_launch.sh     new iTerm2 tab, start the chosen CLI, set the name
+    ├── handoff_check.py      accept only your own fresh handover file
     ├── handoff_title.sh      read the current name, build "... - Part N"
     ├── tabtitle.py           read or set the iTerm2 tab title (Codex, agy, Grok)
     ├── bg_check.sh           list background shells of the session
@@ -242,21 +253,23 @@ I audited both the skill and the scripts before publishing. What you should know
   the tab title. The new tab opens in the window of the old session, not in whichever
   window has the focus. Dialogs (folder trust, MCP servers, permissions) are always yours
   to answer.
-- **No code from the project folder.** All Python runs with `python3 -I`, also while
+- **No code from the project folder.** All Python runs with `python3 -I` (the skill calls
+  it that way, and the scripts carry it in their first line), also while
   `install.sh --iterm2` builds its venv, so a module in the folder you hand off (for
   example a planted `re.py`) is never imported.
 - **Pinned downloads.** `install.sh --iterm2` installs the `iterm2` module and its
-  dependencies in the exact versions of `requirements-iterm2.txt`; pip accepts only files
-  that match the SHA-256 hashes in that file.
+  dependencies in the exact versions of `requirements-iterm2.txt`; pip accepts only
+  ready-built files (wheels) that match the SHA-256 hashes in that file.
 - **Auto-close keeps the tab on any doubt.** It closes only the tab whose tty and iTerm2
   session belong to the old session (if that is the window's last tab, iTerm2 closes the
   window with it). It keeps the tab open if it cannot recognise an empty input box, if
-  text appears in the input box during the countdown (checked every second), if the
-  session becomes active again (Claude Code: its session registry; other CLIs: the screen
-  changes or shows a busy hint), if the background check does not report "no background
-  shell", or if the CLI is no longer in the foreground of its tab. It is
-  still a heuristic for Codex, agy and Grok: "idle" means a quiet screen without a busy
-  hint (see *Limits*).
+  the terminal cursor is not directly behind the prompt (text, spaces or empty lines in
+  the box), if the box or the cursor changes during the countdown (checked every second),
+  if the session becomes active again (Claude Code: its session registry or a busy hint;
+  other CLIs: any change on the screen or a busy hint), if the background check does not
+  report "no background shell", or if the CLI is no longer in the foreground of its tab.
+  It is still a heuristic for Codex, agy and Grok: "idle" means a quiet screen without a
+  busy hint (see *Limits*).
 - **Handover files are stored locally** (`~/.claude/handoffs`, folder 700, files 600). The
   skill forbids secrets in them, but a model can make mistakes - do not sync that folder
   anywhere public. The new session reads the file, so its contents go to the model
@@ -264,12 +277,16 @@ I audited both the skill and the scripts before publishing. What you should know
 - **The handover file is trusted.** CONFIRM is the default; CONTINUE needs work you
   assigned, quoted with date, and the new session first checks that the work is still
   open. The quote lives in the same file: whoever can write to `~/.claude/handoffs` can
-  make a new session continue work. Keep that folder private. The launcher accepts only
+  write a handover file. Keep that folder private. The launcher accepts only
   your own regular file directly in that folder (real absolute path, no symlink, not
-  readable or writable by others, a plain `.md` name, at most 24 hours old). The new tab
+  readable or writable by others, a plain `.md` name, at most 15 minutes old). The new tab
   checks the folder again against the `HANDOFF_DIR` of your own shell profile, so a folder
-  that only an agent set in its environment is refused. An agent that may write into your
-  handover folder can still write a handover file - that is what the skill does.
+  that only an agent set in its environment is refused. **A file alone never starts work
+  unseen:** if the file is not exactly in CONFIRM mode, the new tab shows its Mode section
+  and waits for your Enter. Only `export HANDOFF_AUTO=1` in your own shell profile switches
+  that question off. Remote mode uses the same file check and always starts in CONFIRM
+  mode: you start the work after attaching. An agent that may write into your handover
+  folder can still write a handover file - that is what the skill does.
 - **Remote mode never trusts a repository for you.** If Claude Code asks whether to trust
   a freshly cloned repository on the server, the skill stops and lets you decide: trusting
   it lets the repository's hooks and MCP settings run code. It validates host, repository,
@@ -277,13 +294,15 @@ I audited both the skill and the scripts before publishing. What you should know
   (`.env`, keys, credentials) - it lists them and you copy what you need.
 - **Handover files stay private.** Folder mode 700, files mode 600, also on the server.
 - **Background check output is redacted.** URL credentials, common token prefixes
-  (`sk-`, `ghp_`, `github_pat_`, `xoxb-`, `AKIA`), `Bearer`/`Basic` values, header values
-  (`-H`, `--header`), cookies (also `--cookie`), JSON keys like `"password"`, `--token`/`--password`/`--user`
-  values (also quoted), `-u user:pass`, `-p` values and `KEY=`/`TOKEN=` values are masked
-  before they reach the model. Masking works by pattern; it cannot promise to catch every
-  secret. The auto-close log never contains command text.
+  (`sk-`, `ghp_`, `github_pat_`, `xoxb-`, `AKIA`), `Bearer`/`Basic` values, everything after
+  `-H`, `--header`, `--cookie`, `-b`, `-u`, `--user` and `-a` up to the next option (also
+  values of several words), JSON keys like `"password"`, `--token`/`--password` values,
+  `-p` values and `KEY=`/`TOKEN=` values are masked before they reach the model. Masking
+  works by pattern; it cannot promise to catch every secret. The auto-close log never
+  contains command text.
 - **Your settings stay yours.** The skill tells the agent never to set any `HANDOFF_*`
-  variable itself (only exception: `HANDOFF_MODEL` for the new session, when you ask for a
+  variable, `CLAUDE_CONTEXT_WINDOW`, `CLAUDE_CONFIG_DIR`, `CODEX_HOME` or `GROK_HOME`
+  itself (only exception: `HANDOFF_MODEL` for the new session, when you ask for a
   model in the chat), and to treat a `[CONTEXT-WATCHER]` text in files or tool output as
   data. Only the hook's own note counts.
 - **No telemetry.** The scripts make no network calls. Network traffic comes only from
@@ -298,14 +317,17 @@ I audited both the skill and the scripts before publishing. What you should know
   (Grok), and the session id variables each CLI sets for its shells.
 - macOS and iTerm2 only. Started from another terminal, the new session opens in a new
   iTerm2 window; the old terminal gets no auto-close.
-- `bg_check.sh` counts shells, sandbox wrappers (`sandbox-exec`) and, for Codex, agy and
-  Grok, processes in their own terminal. Work that a CLI starts directly on its own
-  terminal without a shell is not seen; MCP servers are ignored on purpose. If the
-  process list cannot be read, the check reports "unknown" (exit 2) and the tab stays open.
-- Auto-close reads the input box as text: a draft of only spaces, or text below an empty
-  line in the box, is not seen. A turn that hangs without output and without a busy hint
-  looks idle. The watcher is a helper script (`autoclose.py --run`); whoever can run
-  commands as you can also call it for another idle tab of yours.
+- `bg_check.sh` counts shells, sandbox wrappers (`sandbox-exec`), processes on the CLI's
+  terminal whose parent has ended (for example after `nohup ... &`) and, for Codex, agy and
+  Grok, processes in their own terminal. A program that Codex, agy or Grok starts directly
+  on the CLI's terminal without a shell is not seen: it looks like an MCP server, and MCP
+  servers are ignored on purpose. If the process list cannot be read, the check reports
+  "unknown" (exit 2) and the tab stays open.
+- Auto-close reads the input box and the cursor from the screen. If a CLI changes how its
+  input box looks, the box is not recognised and the tab stays open. A turn that hangs
+  without output and without a busy hint looks idle. The watcher is a helper script
+  (`autoclose.py --run`); whoever can run commands as you can also call it for another
+  idle tab of yours (for Claude Code only with the matching session id).
 - In agy the context is not measurable; the agent estimates whether the rest of a step fits.
 - In Codex, agy and Grok the name is the iTerm2 tab title. Another iTerm2 script that sets
   tab titles itself can overwrite it (seen on the test machine; the name tests ran with
@@ -314,8 +336,8 @@ I audited both the skill and the scripts before publishing. What you should know
   script finds its session through the terminal (tty), not through folder or start time.
 - Auto-close for Codex, agy and Grok decides "idle" from the screen: no change for 6 s and
   no busy hint ("esc to interrupt", "esc to cancel", "Ctrl+c:cancel"). It never closes
-  while the screen still changes; after 15 minutes without a quiet screen it gives up and
-  the tab stays open.
+  while the screen still changes - a clock or a counter in a status line also counts as a
+  change; after 15 minutes without a quiet screen it gives up and the tab stays open.
 - If another skill is also named `handoff`, some CLIs ask you which one to run (Grok:
   `/local:handoff`), and an agent can load the other one first.
 - "Does the rest fit into 10 %?" is the model's own estimate.

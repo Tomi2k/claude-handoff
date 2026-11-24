@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S python3 -I
 """UserPromptSubmit hook: suggests /handoff once the context window fills up.
 
 Reads the last assistant entry with `usage` from the transcript and injects an
@@ -30,6 +30,7 @@ import glob
 import json
 import os
 import re
+import stat
 import sys
 
 STEP = 0.10            # re-notify only after another 10 points
@@ -202,18 +203,18 @@ def main():
 
     state_file = os.path.join(STATE_DIR, f".watch-{sid}")
     last_warned = 0.0
-    try:
-        with open(state_file, encoding="utf-8") as f:
-            last_warned = float(f.read().strip() or 0)
+    try:  # O_NOFOLLOW: a symlink in place of the state file is never read
+        with os.fdopen(os.open(state_file, os.O_RDONLY | os.O_NOFOLLOW), encoding="utf-8") as f:
+            last_warned = float(f.read(32).strip() or 0)
     except (OSError, ValueError):
         pass
     if last_warned >= THRESHOLD and frac < last_warned + STEP:
         return
-    try:  # never follow a symlink, never take over a folder of another user
+    try:  # never follow a symlink, never use or change a folder that is not the user's own
         os.makedirs(STATE_DIR, mode=0o700, exist_ok=True)
-        if os.stat(STATE_DIR).st_uid != os.getuid():
+        st = os.lstat(STATE_DIR)
+        if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid():
             return
-        os.chmod(STATE_DIR, 0o700)
         fd = os.open(state_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
     except OSError:
         return

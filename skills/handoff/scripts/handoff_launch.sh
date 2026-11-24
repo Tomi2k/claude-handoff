@@ -23,8 +23,10 @@
 #
 # The handover file must be the user's own regular file directly in the handover folder
 # (real absolute path, no symlink, mode 600 or stricter, name [A-Za-z0-9._-]+.md, at most
-# 24 hours old; folder mode 700). The start script checks the folder again in the new tab
-# against the user's own HANDOFF_DIR.
+# 15 minutes old; folder mode 700). The start script checks the folder again in the new tab
+# against the user's own HANDOFF_DIR. If the file is not exactly in CONFIRM mode, the start
+# script shows its Mode section in the new tab and waits for Enter - unless the user's own
+# profile has HANDOFF_AUTO=1. So a file alone never makes a new session work unseen.
 #
 # Name: Claude Code gets it with --name at start. Codex, agy and Grok get the iTerm2 tab
 # title (tabtitle.py). The tab opens in the window of YOUR session (found by its tty);
@@ -54,39 +56,19 @@ case "$NAME" in *[[:cntrl:]]*) echo "ERROR: session name contains control charac
 NAME=$(python3 -I -c 'import re,sys; s=re.sub(r"[^\w .,+:–—-]", "", sys.argv[1]); print(s.lstrip("-. ").strip()[:80])' "$NAME") \
   || { echo "ERROR: python3 is needed to check the session name" >&2; exit 2; }
 [ -d "$CWD" ] || { echo "ERROR: project dir not found: $CWD" >&2; exit 2; }
-# The new session is told to follow this file, so only the user's own handover file in the
-# handover folder is accepted: never a symlink, a file of another user, a file that others
-# can read or write, or a file somewhere in a project.
-python3 -I -c '
-import os, re, stat, sys, time
-ho, d = sys.argv[1], os.path.expanduser(sys.argv[2])
-def bad(msg):
-    sys.stderr.write("ERROR: handover file: " + msg + "\n")
-    sys.exit(1)
-if not os.path.isabs(ho) or re.search(r"[\x00-\x1f\x7f]", ho):
-    bad("pass an absolute path without control characters")
-try:
-    st = os.lstat(ho)
-except OSError:
-    bad("not found: " + ho)
-if not stat.S_ISREG(st.st_mode):
-    bad("not a regular file (symlinks are not followed): " + ho)
-if st.st_uid != os.getuid():
-    bad("not owned by you: " + ho)
-if st.st_mode & 0o077:
-    bad("others can read or write it - run chmod 600 on it: " + ho)
-if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*\.md", os.path.basename(ho)):
-    bad("unexpected file name (letters, digits, . _ - and the ending .md)")
-if ho != os.path.realpath(ho):
-    bad("pass the real path (no symlink and no .. in any folder of the path)")
-if os.path.dirname(ho) != os.path.realpath(d):
-    bad("must be directly in the handover folder " + d)
-ds = os.lstat(os.path.dirname(ho))
-if not stat.S_ISDIR(ds.st_mode) or ds.st_uid != os.getuid() or ds.st_mode & 0o077:
-    bad("the handover folder must be your own folder with mode 700")
-if time.time() - st.st_mtime > 86400:
-    bad("older than 24 hours - write a new handover file for this handoff")
-' "$HO" "${HANDOFF_DIR:-$HOME/.claude/handoffs}" || exit 2
+# The new session is told to follow this file, so only the user's own fresh handover file
+# in the handover folder is accepted (handoff_check.py).
+python3 -I "$HERE/handoff_check.py" "$HO" || exit 2
+# A file that is not exactly in CONFIRM mode makes the new session work at once. Then the
+# new tab asks the user to press Enter first (see the start script below).
+is_confirm() {
+  [ "$(grep -c -i -E '^[[:space:]]*Mode[[:space:]]*:' "$1")" = "1" ] && grep -q -x 'Mode: CONFIRM' "$1"
+}
+WAIT=60
+if ! is_confirm "$HO"; then
+  WAIT=300
+  echo "The handover file is not in CONFIRM mode: the new tab asks the user to press Enter (not asked if the user's profile has HANDOFF_AUTO=1). Waiting up to $WAIT s."
+fi
 
 PROMPT="Read $HO completely first. Do not reopen decisions that are already made. Follow the Mode section exactly. In CONTINUE mode, first check that the open assigned work is really still open. If it is, continue ONLY that work until its Done-when criterion is met, then report and stop. If it is already done, behave as in CONFIRM mode. In CONFIRM mode, or if the Mode section is missing, do NOT start working: summarise goal, context and state in a few sentences, name the first item under Assigned and ask: Do you want me to do <step> next? If Assigned is empty, say: The assignment is done. Then offer the Suggestions as options and wait. Never invent follow-up tasks. Never run Suggestions without approval."
 
@@ -119,6 +101,21 @@ TMP=$(mktemp "${TMPDIR:-/tmp}/handoff-launch.XXXXXX") || { echo "ERROR: mktemp f
   printf 'if [ "$(cd -- "$D" 2>/dev/null && pwd -P)" != %q ]; then\n' "$(dirname "$HO")"
   echo '  echo "Perfect Handoff: the handover file is not in your handover folder ($D). Nothing was started."; exit 1'
   echo 'fi'
+  printf 'F=%q\n' "$HO"
+  cat <<'START'
+if [ "${HANDOFF_AUTO:-0}" != "1" ] && ! { [ "$(grep -c -i -E '^[[:space:]]*Mode[[:space:]]*:' "$F")" = "1" ] && grep -q -x 'Mode: CONFIRM' "$F"; }; then
+  echo "Perfect Handoff: this handover file is not in CONFIRM mode. The new session will start to work at once."
+  echo "File: $F"
+  # Show the Mode section (9 lines at most) without control characters.
+  python3 -I -c 'import sys
+t = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+i = t.find("## Mode")
+part = "\n".join(t[i:].split("\n")[:9]) if i >= 0 else "(the file has no Mode section)"
+print("".join(c for c in part if c.isprintable() or c == "\n"))' "$F"
+  printf 'Press Enter to start it, or Ctrl+C to cancel: '
+  read -r _ || exit 1
+fi
+START
   printf 'cd -- %q || exit 1\n' "$CWD"
   # HANDOFF_SKIP_PERMISSIONS is the user's own setting. It is read here, in the shell of the
   # new tab, which iTerm2 starts from the user's profile - not from the environment of the
@@ -163,7 +160,7 @@ ITERM_SID="${OUT%%|*}"; TAB_TTY="${OUT#*|}"
 [[ "$TAB_TTY" =~ ^/dev/ttys?[0-9]{1,4}$ ]] || { rm -f -- "$TMP"; echo "ERROR: unexpected tty '$TAB_TTY'" >&2; exit 3; }
 echo "iTerm2 tab opened ($TO, session $ITERM_SID, $TAB_TTY)"
 
-# The CLI must run in the foreground of the new tab (max 60 s), and still run 3 s later.
+# The CLI must run in the foreground of the new tab (max $WAIT s), and still run 3 s later.
 # Matching by the tab's tty is safe with other sessions starting in the same folder.
 fg_pid() {
   local p c
@@ -173,7 +170,7 @@ fg_pid() {
   done
 }
 CPID=""
-for _ in $(seq 1 60); do CPID=$(fg_pid); [ -n "$CPID" ] && break; sleep 1; done
+for _ in $(seq 1 "$WAIT"); do CPID=$(fg_pid); [ -n "$CPID" ] && break; sleep 1; done
 rm -f -- "$TMP"   # normally already removed by the script itself
 if [ -z "$CPID" ]; then
   echo "ERROR: $TO did not start in the new tab. Do NOT close this session; tell the user." >&2; exit 3
