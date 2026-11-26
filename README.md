@@ -350,4 +350,4 @@ MIT - see [LICENSE](LICENSE).
 
 ---
 
-Built by **Timothy Scherman**. Less AI theater. More results.
+Built by **Timothy Scherman** ([timothyscherman.com](https://timothyscherman.com)). Less AI theater. More results.
